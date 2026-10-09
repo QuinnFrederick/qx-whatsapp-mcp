@@ -290,6 +290,14 @@ Download media from a received message.
 - `message_id` (required): ID of the message with media
 - `chat_jid` (required): JID of the chat containing the message
 
+### Group Operations (fork)
+
+This fork adds group management and profile pictures: `resolve_contacts` (turn spoken names
+into contacts and flag ambiguous ones, with avatar thumbnails), `get_profile_picture`,
+`create_group`, `update_group_settings` and `update_group_participants`. Tool parameters,
+the bridge endpoints behind them (`/api/group/*`, `/api/profile-picture`) and their JSON
+shapes are documented in [`FORK.md`](./FORK.md).
+
 ### Chat Operations
 
 All chat tools (`list_chats`, `get_chat`, `get_direct_chat_by_contact`,

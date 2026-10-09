@@ -130,6 +130,7 @@ When adding a new env var: document it here, in `README.md`, and in `.env.exampl
 | Change DB queries / data conversion | `whatsapp-mcp-server/whatsapp.py` |
 | Change bridge REST API or event handling | `whatsapp-bridge/main.go` |
 | Change webhook payload | `whatsapp-bridge/webhook.go` |
+| Group management / profile pictures (fork, see `FORK.md`) | `whatsapp-bridge/groups.go`, tools in `whatsapp-mcp-server/main.py` |
 | Change CI behavior | `.github/workflows/*.yml` |
 | Change release behavior | `release-please-config.json`, `.release-please-manifest.json` |
 

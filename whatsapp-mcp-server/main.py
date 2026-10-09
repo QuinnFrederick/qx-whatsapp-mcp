@@ -8,6 +8,9 @@ from mcp.server.fastmcp import FastMCP
 from mcp_config import resolve_host, resolve_port, resolve_transport
 from parent_watchdog import install_stdio_parent_watchdog
 from whatsapp import (
+    create_group as whatsapp_create_group,
+)
+from whatsapp import (
     download_media as whatsapp_download_media,
 )
 from whatsapp import (
@@ -26,6 +29,9 @@ from whatsapp import (
     get_message_context as whatsapp_get_message_context,
 )
 from whatsapp import (
+    get_profile_picture as whatsapp_get_profile_picture,
+)
+from whatsapp import (
     get_sender_name as whatsapp_get_sender_name,
 )
 from whatsapp import (
@@ -41,6 +47,9 @@ from whatsapp import (
     msg_to_dict,
 )
 from whatsapp import (
+    resolve_contacts as whatsapp_resolve_contacts,
+)
+from whatsapp import (
     search_contacts as whatsapp_search_contacts,
 )
 from whatsapp import (
@@ -54,6 +63,12 @@ from whatsapp import (
 )
 from whatsapp import (
     send_reaction as whatsapp_send_reaction,
+)
+from whatsapp import (
+    update_group_participants as whatsapp_update_group_participants,
+)
+from whatsapp import (
+    update_group_settings as whatsapp_update_group_settings,
 )
 
 # Initialize FastMCP server. Env-var handling is deferred to the __main__ block
@@ -462,6 +477,152 @@ def download_media(message_id: str, chat_jid: str) -> dict[str, Any]:
         return {"success": True, "message": "Media downloaded successfully", "file_path": file_path}
     else:
         return {"success": False, "message": "Failed to download media"}
+
+
+@mcp.tool()
+def resolve_contacts(names: list[str], max_matches: int = 5, with_avatars: bool = True) -> list[dict[str, Any]]:
+    """Turn a list of spoken or typed names into WhatsApp contacts, flagging which names are ambiguous.
+
+    Use this before create_group or update_group_participants whenever the user names people
+    instead of giving phone numbers. Each name is searched the same way as search_contacts.
+
+    For every name you get back:
+      - status: "unique" (exactly one contact matched, so its jid is safe to use),
+        "ambiguous" (several contacts matched; ask the user which one they mean and show each
+        match's name, phone and avatar_url so they can pick), or
+        "none" (nothing matched; ask for a phone number or a different spelling).
+      - matches: up to max_matches contacts, best match first, each with jid, name, phone and
+        avatar_url. avatar_url is a short-lived WhatsApp CDN link to a small profile picture.
+        It is only fetched for ambiguous names and is null when the person has no picture,
+        hides it, or the bridge is unavailable.
+      - total_matches: how many contacts matched before the max_matches cap.
+
+    Args:
+        names: Names to resolve, e.g. ["Harry", "Sam Jones", "Mum"]. Phone numbers also work.
+        max_matches: Cap on matches returned per name (default 5, max 20)
+        with_avatars: Fetch profile pictures for ambiguous names (default True)
+    """
+    return whatsapp_resolve_contacts(names, max_matches=max_matches, with_avatars=with_avatars)
+
+
+@mcp.tool()
+def get_profile_picture(jid: str, preview: bool = True) -> dict[str, Any]:
+    """Get the URL of a contact's or group's WhatsApp profile picture.
+
+    Args:
+        jid: Contact JID ("12025551234@s.whatsapp.net" or "...@lid"), a phone number with
+             country code, or a group JID ending in @g.us
+        preview: True (default) returns a small thumbnail; False returns the full-size image
+
+    Returns:
+        success, jid and url. url is null when there is no picture, the person hides it from
+        you, or the bridge is offline (reason/message say which). URLs are short-lived
+        WhatsApp CDN links, so use them promptly rather than storing them.
+    """
+    return whatsapp_get_profile_picture(jid, preview=preview)
+
+
+@mcp.tool()
+def create_group(
+    name: str,
+    participants: list[str],
+    description: str | None = None,
+    announce: bool | None = None,
+    locked: bool | None = None,
+    member_add: str | None = None,
+    join_approval: bool | None = None,
+) -> dict[str, Any]:
+    """Create a new WhatsApp group and add people to it.
+
+    Resolve names to JIDs first with resolve_contacts and pass the chosen jids here. Your own
+    account is added automatically. People whose privacy settings block being added are
+    listed in failed_participants with an invite code, and the group is still created.
+
+    Args:
+        name: Group subject, up to 25 characters
+        participants: People to add, as JIDs ("12025551234@s.whatsapp.net", "...@lid") or
+                      phone numbers with country code. At least one is required.
+        description: Optional text shown in the group's info screen
+        announce: True makes an "announcement group" where only admins can post messages;
+                  False lets everyone post. Omit to keep WhatsApp's default (everyone posts).
+        locked: True means only admins can edit the group name, picture and description;
+                False lets all members edit them. Omit for WhatsApp's default (all members).
+        member_add: Who may add new members: "all_members" or "admins_only". Omit for default.
+        join_approval: True means an admin must approve anyone joining via invite link;
+                       False lets them join straight away. Omit for default (no approval).
+
+    Returns:
+        success, group (jid, name, description, announce, locked, member_add, join_approval,
+        participants), plus warnings for any setting that could not be applied and
+        failed_participants for anyone WhatsApp refused to add.
+    """
+    return whatsapp_create_group(
+        name,
+        participants,
+        description=description,
+        announce=announce,
+        locked=locked,
+        member_add=member_add,
+        join_approval=join_approval,
+    )
+
+
+@mcp.tool()
+def update_group_settings(
+    group_jid: str,
+    name: str | None = None,
+    description: str | None = None,
+    announce: bool | None = None,
+    locked: bool | None = None,
+    member_add: str | None = None,
+    join_approval: bool | None = None,
+) -> dict[str, Any]:
+    """Change a WhatsApp group's name, description or admin settings. Pass only the fields to change.
+
+    You must be a group admin. Calling this with just group_jid changes nothing and returns
+    the group's current settings and participant list.
+
+    Args:
+        group_jid: The group's JID, ending in @g.us
+        name: New group subject, up to 25 characters
+        description: New description. Pass an empty string to clear it.
+        announce: True means only admins can post ("announcement group"); False lets everyone post
+        locked: True means only admins can edit the group name, picture and description
+        member_add: Who may add new members: "all_members" or "admins_only"
+        join_approval: True means an admin must approve people joining via invite link
+
+    Returns:
+        success (False if any requested setting failed; warnings says which) and group with
+        the current state after the change.
+    """
+    return whatsapp_update_group_settings(
+        group_jid,
+        name=name,
+        description=description,
+        announce=announce,
+        locked=locked,
+        member_add=member_add,
+        join_approval=join_approval,
+    )
+
+
+@mcp.tool()
+def update_group_participants(group_jid: str, participants: list[str], action: str) -> dict[str, Any]:
+    """Add or remove people in a WhatsApp group, or make them admins (promote) or regular members (demote).
+
+    You must be a group admin. Each person gets their own ok flag in results, so one failure
+    (for example privacy settings that block being added) does not stop the others.
+
+    Args:
+        group_jid: The group's JID, ending in @g.us
+        participants: JIDs ("12025551234@s.whatsapp.net", "...@lid") or phone numbers with country code
+        action: "add", "remove", "promote" or "demote"
+
+    Returns:
+        success (True only if every participant succeeded), action, and results with jid, ok,
+        and for failures an error code, error_hint and sometimes an add_request invite code.
+    """
+    return whatsapp_update_group_participants(group_jid, participants, action)
 
 
 def shutdown_handler(signum, frame):

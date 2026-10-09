@@ -1293,3 +1293,302 @@ def download_media(message_id: str, chat_jid: str) -> str | None:
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
         return None
+
+
+# ---------------------------------------------------------------------------
+# Group management and profile pictures (fork additions; see FORK.md).
+#
+# These talk to the bridge endpoints in whatsapp-bridge/groups.go. Every public
+# function returns a dict that always carries ``success`` and ``message`` so the
+# MCP tools never raise on a flaky or outdated bridge.
+# ---------------------------------------------------------------------------
+
+GROUP_PARTICIPANT_ACTIONS = ("add", "remove", "promote", "demote")
+MAX_GROUP_NAME_LENGTH = 25
+_MEMBER_ADD_ALIASES = {
+    "all_members": "all_members",
+    "all": "all_members",
+    "everyone": "all_members",
+    "admins_only": "admins_only",
+    "admins": "admins_only",
+    "admin": "admins_only",
+}
+
+
+def _bridge_result(response: Any) -> dict[str, Any]:
+    """Normalise a bridge HTTP response into a ``success``/``message`` dict."""
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    if response.status_code != 200:
+        body.setdefault("success", False)
+        body.setdefault("message", f"Error: HTTP {response.status_code} - {response.text}")
+        return body
+    body.setdefault("success", True)
+    body.setdefault("message", "OK")
+    return body
+
+
+def _bridge_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        response = requests.post(f"{WHATSAPP_API_BASE_URL}{path}", json=payload, headers=_bridge_headers())
+        return _bridge_result(response)
+    except requests.RequestException as e:
+        return {"success": False, "message": f"Request error: {str(e)}"}
+    except Exception as e:
+        return {"success": False, "message": f"Unexpected error: {str(e)}"}
+
+
+def _bridge_get(path: str, params: dict[str, str], timeout: float) -> dict[str, Any]:
+    try:
+        response = requests.get(
+            f"{WHATSAPP_API_BASE_URL}{path}", params=params, headers=_bridge_headers(), timeout=timeout
+        )
+        return _bridge_result(response)
+    except requests.RequestException as e:
+        return {"success": False, "message": f"Request error: {str(e)}"}
+    except Exception as e:
+        return {"success": False, "message": f"Unexpected error: {str(e)}"}
+
+
+def _failure(message: str) -> dict[str, Any]:
+    return {"success": False, "message": message}
+
+
+def _normalize_member_add(member_add: str | None) -> str | None:
+    """Map the accepted spellings of member_add onto the bridge vocabulary.
+
+    Raises ValueError for anything else so callers can fail before touching the bridge.
+    """
+    if member_add is None:
+        return None
+    key = member_add.strip().lower().replace("-", "_").replace(" ", "_")
+    if key not in _MEMBER_ADD_ALIASES:
+        raise ValueError("member_add must be 'all_members' or 'admins_only'")
+    return _MEMBER_ADD_ALIASES[key]
+
+
+def _clean_participants(participants: list[str] | str | None) -> list[str]:
+    """Accept a list (or a single string, which LLM clients sometimes send) and drop blanks."""
+    if participants is None:
+        return []
+    if isinstance(participants, str):
+        participants = [participants]
+    return [str(p).strip() for p in participants if str(p).strip()]
+
+
+def _validate_group_jid(group_jid: str | None) -> str | None:
+    group_jid = (group_jid or "").strip()
+    if not group_jid.endswith("@g.us"):
+        return None
+    return group_jid
+
+
+def _validate_group_name(name: str | None) -> tuple[str | None, str | None]:
+    """Return (clean_name, error_message)."""
+    name = (name or "").strip()
+    if not name:
+        return None, "Group name must be provided"
+    if len(name) > MAX_GROUP_NAME_LENGTH:
+        return None, f"Group name must be {MAX_GROUP_NAME_LENGTH} characters or fewer"
+    return name, None
+
+
+def create_group(
+    name: str,
+    participants: list[str] | str,
+    description: str | None = None,
+    announce: bool | None = None,
+    locked: bool | None = None,
+    member_add: str | None = None,
+    join_approval: bool | None = None,
+) -> dict[str, Any]:
+    """Create a group via POST /api/group/create. See main.create_group for the field semantics."""
+    clean_name, err = _validate_group_name(name)
+    if err:
+        return _failure(err)
+    members = _clean_participants(participants)
+    if not members:
+        return _failure("At least one participant must be provided")
+    try:
+        mode = _normalize_member_add(member_add)
+    except ValueError as e:
+        return _failure(str(e))
+
+    payload: dict[str, Any] = {"name": clean_name, "participants": members}
+    if description and description.strip():
+        payload["description"] = description.strip()
+    if announce is not None:
+        payload["announce"] = bool(announce)
+    if locked is not None:
+        payload["locked"] = bool(locked)
+    if mode is not None:
+        payload["member_add"] = mode
+    if join_approval is not None:
+        payload["join_approval"] = bool(join_approval)
+    return _bridge_post("/group/create", payload)
+
+
+def update_group_settings(
+    group_jid: str,
+    name: str | None = None,
+    description: str | None = None,
+    announce: bool | None = None,
+    locked: bool | None = None,
+    member_add: str | None = None,
+    join_approval: bool | None = None,
+) -> dict[str, Any]:
+    """Change group settings via POST /api/group/settings. Only non-None fields are sent."""
+    jid = _validate_group_jid(group_jid)
+    if not jid:
+        return _failure("group_jid must be a group JID ending in @g.us")
+    payload: dict[str, Any] = {"group_jid": jid}
+    if name is not None:
+        clean_name, err = _validate_group_name(name)
+        if err:
+            return _failure(err)
+        payload["name"] = clean_name
+    if description is not None:
+        # An empty string is meaningful here: it clears the description.
+        payload["description"] = description
+    if announce is not None:
+        payload["announce"] = bool(announce)
+    if locked is not None:
+        payload["locked"] = bool(locked)
+    if member_add is not None:
+        try:
+            payload["member_add"] = _normalize_member_add(member_add)
+        except ValueError as e:
+            return _failure(str(e))
+    if join_approval is not None:
+        payload["join_approval"] = bool(join_approval)
+    return _bridge_post("/group/settings", payload)
+
+
+def update_group_participants(group_jid: str, participants: list[str] | str, action: str) -> dict[str, Any]:
+    """Add/remove/promote/demote participants via POST /api/group/participants."""
+    jid = _validate_group_jid(group_jid)
+    if not jid:
+        return _failure("group_jid must be a group JID ending in @g.us")
+    action = (action or "").strip().lower()
+    if action not in GROUP_PARTICIPANT_ACTIONS:
+        return _failure("action must be one of: " + ", ".join(GROUP_PARTICIPANT_ACTIONS))
+    members = _clean_participants(participants)
+    if not members:
+        return _failure("At least one participant must be provided")
+    return _bridge_post("/group/participants", {"group_jid": jid, "participants": members, "action": action})
+
+
+def get_profile_picture(jid: str, preview: bool = True, timeout: float = 15) -> dict[str, Any]:
+    """Fetch a profile-picture URL via GET /api/profile-picture.
+
+    Returns a dict with ``success``, ``jid`` and ``url`` (None when the contact has no
+    picture, hides it, or the bridge is unreachable; ``reason``/``message`` say which).
+    """
+    jid = (jid or "").strip()
+    if not jid:
+        return {**_failure("jid must be provided"), "jid": jid, "url": None}
+    result = _bridge_get("/profile-picture", {"jid": jid, "preview": "1" if preview else "0"}, timeout)
+    result.setdefault("jid", jid)
+    result.setdefault("url", None)
+    return result
+
+
+def _match_rank(query: str, name: str | None) -> int:
+    """Lower is better: exact name, then prefix, then whole-word, then anything else."""
+    q = query.casefold().strip()
+    n = (name or "").casefold().strip()
+    if not n:
+        return 4
+    if n == q:
+        return 0
+    if n.startswith(q):
+        return 1
+    if q in n.split():
+        return 2
+    return 3
+
+
+def _contact_match(contact: dict[str, Any]) -> dict[str, Any] | None:
+    """Shape a search_contacts row for resolve_contacts, or None if it is not a person."""
+    jid = contact.get("jid") or ""
+    if jid.endswith("@s.whatsapp.net"):
+        phone: str | None = jid.split("@", 1)[0]
+    elif jid.endswith("@lid"):
+        phone = _resolve_lid_to_phone(jid)
+        if phone:
+            # Canonicalise onto the phone JID: that is the form the other tools
+            # and the bridge expect, and it lets the @lid and phone rows for the
+            # same person collapse into one match.
+            jid = f"{phone}@s.whatsapp.net"
+    else:
+        return None
+    return {"jid": jid, "name": contact.get("name") or None, "phone": phone, "avatar_url": None}
+
+
+def _dedupe_matches(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge rows that describe the same person (same canonical JID).
+
+    whatsmeow's contact store often holds both the @lid and the phone form of a
+    contact. The first row wins (search_contacts lists chats before address-book
+    entries) and a missing name is filled in from a later duplicate.
+    """
+    by_jid: dict[str, dict[str, Any]] = {}
+    out: list[dict[str, Any]] = []
+    for m in matches:
+        existing = by_jid.get(m["jid"])
+        if existing is None:
+            by_jid[m["jid"]] = m
+            out.append(m)
+        elif not existing["name"] and m["name"]:
+            existing["name"] = m["name"]
+    return out
+
+
+def resolve_contacts(
+    names: list[str] | str,
+    max_matches: int = 5,
+    with_avatars: bool = True,
+) -> list[dict[str, Any]]:
+    """Resolve human names to contacts, flagging ambiguity so the caller can ask the user.
+
+    For each name: ``status`` is "unique" (one match), "ambiguous" (several) or "none";
+    ``matches`` holds up to ``max_matches`` contacts, best match first, each with jid,
+    name, phone and avatar_url. Avatars are only fetched for ambiguous names, and a
+    failed fetch simply leaves avatar_url as None.
+    """
+    queries = _clean_participants(names)
+    max_matches = max(1, min(int(max_matches or 5), 20))
+    results: list[dict[str, Any]] = []
+    for query in queries:
+        try:
+            raw = search_contacts(query)
+        except Exception as e:  # pragma: no cover - defensive; search_contacts already swallows DB errors
+            print(f"resolve_contacts: search failed for {query!r}: {e}")
+            raw = []
+        matches = [m for m in (_contact_match(c) for c in raw) if m is not None]
+        matches = _dedupe_matches(matches)
+        # Stable sort: ties keep search_contacts order, so people with an existing
+        # chat come before address-book-only entries with the same name.
+        matches.sort(key=lambda m: _match_rank(query, m["name"]))
+        total = len(matches)
+        shown = matches[:max_matches]
+        if total == 0:
+            status = "none"
+        elif total == 1:
+            status = "unique"
+        else:
+            status = "ambiguous"
+        if status == "ambiguous" and with_avatars:
+            for m in shown:
+                try:
+                    pic = get_profile_picture(m["jid"], preview=True)
+                    m["avatar_url"] = pic.get("url") if pic.get("success") else None
+                except Exception as e:  # pragma: no cover - get_profile_picture should never raise
+                    print(f"resolve_contacts: avatar fetch failed for {m['jid']}: {e}")
+                    m["avatar_url"] = None
+        results.append({"query": query, "status": status, "matches": shown, "total_matches": total})
+    return results

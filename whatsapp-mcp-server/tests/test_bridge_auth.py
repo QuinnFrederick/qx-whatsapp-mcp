@@ -83,6 +83,9 @@ def test_send_message_without_token_surfaces_bridge_401(monkeypatch, tmp_path):
         ("download_media", ("msg-id", "12025551234@s.whatsapp.net"), "/download"),
         ("send_reaction", ("12025551234@s.whatsapp.net", "3AABCDEF01234567", "👍"), "/react"),
         ("mark_messages_read", (["3AABCDEF01234567"], "12025551234@s.whatsapp.net"), "/mark-read"),
+        ("create_group", ("Trip", ["12025551234"]), "/group/create"),
+        ("update_group_settings", ("120363012345678901@g.us",), "/group/settings"),
+        ("update_group_participants", ("120363012345678901@g.us", ["12025551234"], "add"), "/group/participants"),
     ],
 )
 def test_bridge_post_helpers_include_auth_headers(monkeypatch, tmp_path, func_name, args, expected_suffix):

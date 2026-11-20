@@ -1524,6 +1524,28 @@ def list_communities(include_sub_groups: bool = True, timeout: float = 50) -> di
     return result
 
 
+COMMUNITY_GROUP_ACTIONS = ("link", "unlink")
+
+
+def update_community_groups(community_jid: str, group_jids: list[str] | str, action: str) -> dict[str, Any]:
+    """Link existing groups into a community, or unlink them, via POST /api/community/groups."""
+    community = _validate_group_jid(community_jid)
+    if not community:
+        return _failure("community_jid must be a community JID ending in @g.us")
+    action = (action or "").strip().lower()
+    if action not in COMMUNITY_GROUP_ACTIONS:
+        return _failure("action must be one of: " + ", ".join(COMMUNITY_GROUP_ACTIONS))
+    groups = _clean_participants(group_jids)
+    if not groups:
+        return _failure("At least one group JID must be provided")
+    bad = [g for g in groups if not _validate_group_jid(g)]
+    if bad:
+        return _failure("group_jids must be group JIDs ending in @g.us; got: " + ", ".join(bad))
+    if community in groups:
+        return _failure("group_jids must not include the community itself")
+    return _bridge_post("/community/groups", {"community_jid": community, "group_jids": groups, "action": action})
+
+
 def _match_rank(query: str, name: str | None) -> int:
     """Lower is better: exact name, then prefix, then whole-word, then anything else."""
     q = query.casefold().strip()

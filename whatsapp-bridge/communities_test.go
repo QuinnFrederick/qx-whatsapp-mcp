@@ -130,6 +130,17 @@ func TestCommunityEndpointValidation(t *testing.T) {
 		{"list rejects POST", http.MethodPost, "/api/communities", "{}", http.StatusMethodNotAllowed},
 		{"list with no client is 503", http.MethodGet, "/api/communities", "", http.StatusServiceUnavailable},
 		{"list without sub-groups with no client is 503", http.MethodGet, "/api/communities?sub_groups=0", "", http.StatusServiceUnavailable},
+
+		{"groups rejects GET", http.MethodGet, "/api/community/groups", "", http.StatusMethodNotAllowed},
+		{"groups rejects invalid JSON", http.MethodPost, "/api/community/groups", "{", http.StatusBadRequest},
+		{"groups requires community", http.MethodPost, "/api/community/groups", `{"group_jids":["1@g.us"],"action":"link"}`, http.StatusBadRequest},
+		{"groups rejects user JID community", http.MethodPost, "/api/community/groups", `{"community_jid":"1@s.whatsapp.net","group_jids":["2@g.us"],"action":"link"}`, http.StatusBadRequest},
+		{"groups rejects bad action", http.MethodPost, "/api/community/groups", `{"community_jid":"1@g.us","group_jids":["2@g.us"],"action":"move"}`, http.StatusBadRequest},
+		{"groups requires a group", http.MethodPost, "/api/community/groups", `{"community_jid":"1@g.us","group_jids":[" "],"action":"link"}`, http.StatusBadRequest},
+		{"groups rejects user JID group", http.MethodPost, "/api/community/groups", `{"community_jid":"1@g.us","group_jids":["2@s.whatsapp.net"],"action":"unlink"}`, http.StatusBadRequest},
+		{"groups rejects linking community to itself", http.MethodPost, "/api/community/groups", `{"community_jid":"1@g.us","group_jids":["1@g.us"],"action":"link"}`, http.StatusBadRequest},
+		{"link with no client is 503", http.MethodPost, "/api/community/groups", `{"community_jid":"1@g.us","group_jids":["2@g.us"],"action":"LINK"}`, http.StatusServiceUnavailable},
+		{"unlink with no client is 503", http.MethodPost, "/api/community/groups", `{"community_jid":"1@g.us","group_jids":["2@g.us"],"action":"unlink"}`, http.StatusServiceUnavailable},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -149,5 +160,18 @@ func TestQueryBool(t *testing.T) {
 		if got := queryBool(r, "sub_groups", true); got != want {
 			t.Errorf("queryBool(%q) = %v, want %v", raw, got, want)
 		}
+	}
+}
+
+func TestParseGroupJIDs(t *testing.T) {
+	got, err := parseGroupJIDs([]string{"2@g.us", " ", "3@g.us", "2@g.us "}, "group_jids")
+	if err != nil || len(got) != 2 || got[0] != gjid("2") || got[1] != gjid("3") {
+		t.Fatalf("parseGroupJIDs = %v, %v; want [2@g.us 3@g.us] (blanks and duplicates dropped)", got, err)
+	}
+	if _, err := parseGroupJIDs([]string{"2@g.us", "15550000001"}, "group_jids"); err == nil || !strings.Contains(err.Error(), `"15550000001"`) {
+		t.Errorf("bad entry err = %v, want it to name the entry", err)
+	}
+	if _, err := parseGroupJIDs(nil, "group_jids"); err == nil {
+		t.Error("empty list should fail")
 	}
 }

@@ -68,6 +68,9 @@ from whatsapp import (
     send_reaction as whatsapp_send_reaction,
 )
 from whatsapp import (
+    update_community_groups as whatsapp_update_community_groups,
+)
+from whatsapp import (
     update_group_participants as whatsapp_update_group_participants,
 )
 from whatsapp import (
@@ -655,6 +658,27 @@ def list_communities(include_sub_groups: bool = True) -> dict[str, Any]:
         groups could be listed; warnings says why for each such community.
     """
     return whatsapp_list_communities(include_sub_groups=include_sub_groups)
+
+
+@mcp.tool()
+def update_community_groups(community_jid: str, group_jids: list[str], action: str) -> dict[str, Any]:
+    """Move existing WhatsApp groups into a community ("link") or take them out ("unlink").
+
+    You must be an admin of the community and of each group. Unlinked groups keep their
+    members and messages and become standalone groups again. The community's announcement
+    group cannot be unlinked. To make a brand-new group inside a community, use
+    create_group(community_jid=...) instead.
+
+    Args:
+        community_jid: The community's JID from list_communities, ending in @g.us
+        group_jids: Group JIDs (ending in @g.us) to link or unlink
+        action: "link" or "unlink"
+
+    Returns:
+        success (True only if every group succeeded), action, community_jid and results with
+        jid, ok and, for failures, the error from WhatsApp.
+    """
+    return whatsapp_update_community_groups(community_jid, group_jids, action)
 
 
 def shutdown_handler(signum, frame):

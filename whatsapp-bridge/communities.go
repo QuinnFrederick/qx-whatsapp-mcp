@@ -12,6 +12,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -19,6 +21,35 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 )
+
+type communityGroupsRequest struct {
+	CommunityJID string   `json:"community_jid"`
+	GroupJIDs    []string `json:"group_jids"`
+	Action       string   `json:"action"` // link | unlink
+}
+
+// parseGroupJIDs parses a list of @g.us JIDs, dropping blanks and duplicates.
+func parseGroupJIDs(raw []string, field string) ([]types.JID, error) {
+	out := make([]types.JID, 0, len(raw))
+	seen := map[types.JID]bool{}
+	for _, r := range raw {
+		if strings.TrimSpace(r) == "" {
+			continue
+		}
+		jid, err := parseGroupJID(r, field)
+		if err != nil {
+			return nil, fmt.Errorf("%w (got %q)", err, strings.TrimSpace(r))
+		}
+		if !seen[jid] {
+			seen[jid] = true
+			out = append(out, jid)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("at least one %s entry is required", field)
+	}
+	return out, nil
+}
 
 // queryBool reads an optional boolean query parameter ("1"/"true"/"0"/"false").
 func queryBool(r *http.Request, key string, def bool) bool {
@@ -182,6 +213,68 @@ func registerCommunityRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth 
 		resp := map[string]any{"success": true, "communities": buildCommunities(joined, serverSubGroups, selfJIDs(client))}
 		if len(warn) > 0 {
 			resp["warnings"] = warn
+		}
+		writeJSON(w, http.StatusOK, resp)
+	}))
+
+	// POST /api/community/groups {"community_jid", "group_jids": [...], "action": "link"|"unlink"}
+	//
+	// Moves existing groups into or out of a community, one IQ per group, so
+	// each gets its own ok flag (like /api/group/participants).
+	mux.HandleFunc("/api/community/groups", auth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			jsonErr(w, http.StatusMethodNotAllowed, "POST only")
+			return
+		}
+		var req communityGroupsRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		community, err := parseGroupJID(req.CommunityJID, "community_jid")
+		if err != nil {
+			jsonErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		action := strings.ToLower(strings.TrimSpace(req.Action))
+		if action != "link" && action != "unlink" {
+			jsonErr(w, http.StatusBadRequest, "action must be link or unlink")
+			return
+		}
+		groups, err := parseGroupJIDs(req.GroupJIDs, "group_jids")
+		if err != nil {
+			jsonErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		for _, g := range groups {
+			if g == community {
+				jsonErr(w, http.StatusBadRequest, "group_jids must not include the community itself")
+				return
+			}
+		}
+		if !requireClient(w, client) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), groupRequestTimeout)
+		defer cancel()
+		results := make([]map[string]any, 0, len(groups))
+		allOK := true
+		for _, g := range groups {
+			if action == "link" {
+				err = client.LinkGroup(ctx, community, g)
+			} else {
+				err = client.UnlinkGroup(ctx, community, g)
+			}
+			entry := map[string]any{"jid": g.String(), "ok": err == nil}
+			if err != nil {
+				allOK = false
+				entry["error"] = err.Error()
+			}
+			results = append(results, entry)
+		}
+		resp := map[string]any{"success": allOK, "action": action, "community_jid": community.String(), "results": results}
+		if !allOK {
+			resp["message"] = "some groups could not be " + action + "ed; see results (you must be an admin of the community and of each group)"
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}))

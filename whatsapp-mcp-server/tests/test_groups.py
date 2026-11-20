@@ -498,6 +498,37 @@ def test_list_communities_reports_old_bridge_and_keeps_shape(monkeypatch):
     assert result["communities"] == []
 
 
+def test_update_community_groups_posts_normalized_action(monkeypatch):
+    calls = _capture_post(monkeypatch, payload={"success": True, "results": []})
+
+    whatsapp.update_community_groups(" 100@g.us ", ["101@g.us", " 102@g.us "], " LINK ")
+    whatsapp.update_community_groups("100@g.us", "101@g.us", "unlink")
+
+    assert calls[0]["url"].endswith("/community/groups")
+    assert calls[0]["json"] == {"community_jid": "100@g.us", "group_jids": ["101@g.us", "102@g.us"], "action": "link"}
+    assert calls[1]["json"] == {"community_jid": "100@g.us", "group_jids": ["101@g.us"], "action": "unlink"}
+
+
+@pytest.mark.parametrize(
+    ("community_jid", "group_jids", "action", "expected"),
+    [
+        ("12025551234@s.whatsapp.net", ["101@g.us"], "link", "community_jid"),
+        ("100@g.us", ["101@g.us"], "move", "link, unlink"),
+        ("100@g.us", [], "link", "At least one group"),
+        ("100@g.us", ["101@g.us", "12025551234"], "link", "12025551234"),
+        ("100@g.us", ["100@g.us"], "unlink", "community itself"),
+    ],
+)
+def test_update_community_groups_validates_input(monkeypatch, community_jid, group_jids, action, expected):
+    calls = _capture_post(monkeypatch, payload={"success": True})
+
+    result = whatsapp.update_community_groups(community_jid, group_jids, action)
+
+    assert result["success"] is False
+    assert expected in result["message"]
+    assert calls == []
+
+
 # --- MCP tool wrappers ----------------------------------------------------
 
 
@@ -515,6 +546,9 @@ def test_mcp_tools_delegate_with_keyword_arguments(monkeypatch):
     monkeypatch.setattr(
         mcp_main, "whatsapp_list_communities", lambda *a, **k: seen.setdefault("communities", (a, k)) or {}
     )
+    monkeypatch.setattr(
+        mcp_main, "whatsapp_update_community_groups", lambda *a, **k: seen.setdefault("link", (a, k)) or {}
+    )
 
     mcp_main.create_group("Trip", ["1"], announce=True, member_add="admins_only")
     mcp_main.update_group_settings("g@g.us", locked=True)
@@ -522,6 +556,7 @@ def test_mcp_tools_delegate_with_keyword_arguments(monkeypatch):
     mcp_main.get_profile_picture("1", preview=False)
     mcp_main.resolve_contacts(["Harry"], max_matches=2, with_avatars=False)
     mcp_main.list_communities(include_sub_groups=False)
+    mcp_main.update_community_groups("100@g.us", ["101@g.us"], "link")
 
     assert seen["create"] == (
         ("Trip", ["1"]),
@@ -549,3 +584,4 @@ def test_mcp_tools_delegate_with_keyword_arguments(monkeypatch):
     assert seen["pic"] == (("1",), {"preview": False})
     assert seen["resolve"] == ((["Harry"],), {"max_matches": 2, "with_avatars": False})
     assert seen["communities"] == ((), {"include_sub_groups": False})
+    assert seen["link"] == (("100@g.us", ["101@g.us"], "link"), {})

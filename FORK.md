@@ -23,6 +23,7 @@ any ambiguous names (showing `avatar_url` thumbnails) → `create_group` with th
 | `update_group_settings(group_jid, name=None, description=None, announce=None, locked=None, member_add=None, join_approval=None)` | Changes only the fields passed. With no fields it returns the current state. |
 | `update_group_participants(group_jid, participants, action)` | `action` is `add`, `remove`, `promote` or `demote`; per-participant `ok` flags in `results`. |
 | `list_communities(include_sub_groups=True)` | Communities you belong to, each with `announcement_group` and `sub_groups` (`jid`, `name`, `is_announcement_group`, `joined`). The full group list (including groups you have not joined) comes from WhatsApp; if that query fails for a community, only your own groups are listed and `sub_groups_source` is `joined_only`. |
+| `update_community_groups(community_jid, group_jids, action)` | `action` is `link` (move existing groups into the community) or `unlink` (make them standalone again); per-group `ok` flags in `results`. Needs admin rights on the community and each group; the announcement group cannot be unlinked. |
 
 Participants may be given as JIDs (`…@s.whatsapp.net`, `…@lid`) or as phone numbers with
 country code in any formatting (`+1 (202) 555-1234`). Group names are limited to 100
@@ -90,6 +91,15 @@ Response: `{"success": true, "communities": [{"jid", "name", "description", "you
 `sub_groups=1` (default) one more per community fetches its full group list.
 `you_are_admin` is `null` when WhatsApp did not include you in the community's participant
 list.
+
+### `POST /api/community/groups`
+
+```json
+{"community_jid": "1203…@g.us", "group_jids": ["1203…@g.us"], "action": "link"}
+```
+
+`action` is `link` or `unlink`; one IQ per group. Response: `{"success": <all ok>, "action",
+"community_jid", "results": [{"jid", "ok", "error"?}]}`.
 
 ### Group object
 

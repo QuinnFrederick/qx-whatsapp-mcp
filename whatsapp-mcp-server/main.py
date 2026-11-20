@@ -688,9 +688,15 @@ def list_communities(community_jid: str | None = None, include_sub_groups: bool 
     Returns:
         success and communities, each with jid, name, description, you_are_admin (true/false,
         or null if unknown), announcement_group (jid, name and joined, or null) and
-        sub_groups (jid, name, is_announcement_group, joined), announcement group first.
-        sub_groups_source is "server" for the full list or "joined_only" when only your own
-        groups could be listed; warnings says why for each such community.
+        sub_groups (jid, name, is_announcement_group, joined, hidden, is_general_chat, size),
+        announcement group first. hidden=true marks a group the admins hid from the
+        community's group list (only invited members see it). sub_groups_source is "server"
+        for the complete list or "joined_only" when only your own groups are shown; there
+        hidden and is_general_chat are null (unknown). warnings explains any community whose
+        complete list could not be fetched.
+
+    Hiding a group can only be chosen in the WhatsApp app, when the group is created inside
+    the community; these tools can read the flag but not set it.
     """
     return whatsapp_list_communities(community_jid=community_jid, include_sub_groups=include_sub_groups)
 

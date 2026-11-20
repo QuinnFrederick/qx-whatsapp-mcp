@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"go.mau.fi/whatsmeow"
+	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -36,11 +37,11 @@ func TestBuildCommunities(t *testing.T) {
 		{JID: gjid("300"), GroupName: types.GroupName{Name: "Family"}},
 		nil,
 	}
-	server := map[types.JID][]*types.GroupLinkTarget{
+	server := map[types.JID][]communitySubGroup{
 		forest: {
-			{JID: gjid("103"), GroupName: types.GroupName{Name: "Archery"}},
-			{JID: gjid("102"), GroupName: types.GroupName{Name: "camping"}},
-			{JID: gjid("101"), GroupName: types.GroupName{Name: "Forest Announcements"}, GroupIsDefaultSub: types.GroupIsDefaultSub{IsDefaultSubGroup: true}},
+			{JID: gjid("103"), Name: "Archery", Size: 12, IsHidden: true},
+			{JID: gjid("102"), Name: "camping", IsGeneralChat: true},
+			{JID: gjid("101"), Name: "Forest Announcements", Size: 40, IsAnnouncement: true},
 		},
 	}
 
@@ -71,6 +72,13 @@ func TestBuildCommunities(t *testing.T) {
 	}
 	if subs[1]["joined"] != false || subs[2]["joined"] != true {
 		t.Errorf("joined flags = %v / %v; Archery is not joined, camping is", subs[1]["joined"], subs[2]["joined"])
+	}
+	if subs[1]["hidden"] != true || subs[1]["size"] != 12 || subs[2]["is_general_chat"] != true || subs[2]["size"] != nil {
+		t.Errorf("server flags: archery %v, camping %v", subs[1], subs[2])
+	}
+	bookSub := unknownSubs(t, got[0])
+	if bookSub["hidden"] != nil || bookSub["is_general_chat"] != nil {
+		t.Errorf("joined_only entries must report hidden/general chat as unknown: %v", bookSub)
 	}
 
 	if unknown["jid"] != book.String() || unknown["sub_groups_source"] != "joined_only" || unknown["you_are_admin"] != nil {
@@ -290,5 +298,64 @@ func TestCollectSubGroupsStopsAfterRateLimit(t *testing.T) {
 		if !strings.Contains(warn[id+"@g.us"], "rate-limiting") {
 			t.Errorf("warning for %s = %q, want a skipped-for-rate-limit note", id, warn[id+"@g.us"])
 		}
+	}
+}
+
+func unknownSubs(t *testing.T, c map[string]any) map[string]any {
+	t.Helper()
+	subs := c["sub_groups"].([]map[string]any)
+	if len(subs) == 0 {
+		t.Fatalf("community %v has no sub_groups", c["jid"])
+	}
+	return subs[0]
+}
+
+// Shape of a live response (values made up): attributes id/subject/s_t/size
+// and child flags default_sub_group, general_chat and hidden_group.
+func TestParseSubGroupsNode(t *testing.T) {
+	group := func(id, subject string, attrs waBinary.Attrs, flags ...string) waBinary.Node {
+		a := waBinary.Attrs{"id": id, "subject": subject, "s_t": "1700000000"}
+		for k, v := range attrs {
+			a[k] = v
+		}
+		var children []waBinary.Node
+		for _, f := range flags {
+			children = append(children, waBinary.Node{Tag: f})
+		}
+		return waBinary.Node{Tag: "group", Attrs: a, Content: children}
+	}
+	res := &waBinary.Node{Tag: "iq", Content: []waBinary.Node{{Tag: "sub_groups", Content: []waBinary.Node{
+		group("101", "Announcements", waBinary.Attrs{"size": "40"}, "default_sub_group"),
+		group("102", "General", waBinary.Attrs{"size": "35"}, "general_chat"),
+		group("103", "Moderators", waBinary.Attrs{"size": "3"}, "hidden_group"),
+		group("104", "No size", nil),
+		{Tag: "something_else"},
+	}}}}
+
+	got, err := parseSubGroupsNode(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []communitySubGroup{
+		{JID: gjid("101"), Name: "Announcements", Size: 40, IsAnnouncement: true},
+		{JID: gjid("102"), Name: "General", Size: 35, IsGeneralChat: true},
+		{JID: gjid("103"), Name: "Moderators", Size: 3, IsHidden: true},
+		{JID: gjid("104"), Name: "No size"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d groups, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("group %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+
+	if _, err := parseSubGroupsNode(&waBinary.Node{Tag: "iq"}); err == nil {
+		t.Error("a response without sub_groups must be an error")
+	}
+	bad := &waBinary.Node{Tag: "iq", Content: []waBinary.Node{{Tag: "sub_groups", Content: []waBinary.Node{{Tag: "group"}}}}}
+	if _, err := parseSubGroupsNode(bad); err == nil {
+		t.Error("a group without id or jid must be an error")
 	}
 }

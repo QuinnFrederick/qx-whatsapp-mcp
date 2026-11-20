@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"go.mau.fi/whatsmeow"
+	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -135,20 +136,93 @@ func adminStatus(info *types.GroupInfo, self []types.JID) any {
 	return nil
 }
 
-func subGroupJSON(jid types.JID, name string, isAnnouncement, joined bool) map[string]any {
+// communitySubGroup is one group from a community's sub_groups listing.
+// whatsmeow's GetSubGroups keeps only jid, subject and default_sub_group, but
+// the same response also carries the member count (size) and two flags seen
+// live as child elements: <general_chat/> and <hidden_group/> (a group the
+// admins hid from the community's group list; only invited members see it).
+type communitySubGroup struct {
+	JID            types.JID
+	Name           string
+	Size           int
+	IsAnnouncement bool
+	IsGeneralChat  bool
+	IsHidden       bool
+}
+
+// parseSubGroupsNode parses the response to an iq get <sub_groups/>.
+func parseSubGroupsNode(res *waBinary.Node) ([]communitySubGroup, error) {
+	list, ok := res.GetOptionalChildByTag("sub_groups")
+	if !ok {
+		return nil, fmt.Errorf("response to sub-groups query has no sub_groups element")
+	}
+	out := []communitySubGroup{}
+	for _, child := range list.GetChildren() {
+		if child.Tag != "group" {
+			continue
+		}
+		ag := child.AttrGetter()
+		jid := ag.OptionalJIDOrEmpty("jid")
+		if jid.IsEmpty() {
+			jid = types.NewJID(ag.String("id"), types.GroupServer)
+		}
+		sg := communitySubGroup{JID: jid, Name: ag.OptionalString("subject"), Size: ag.OptionalInt("size")}
+		if !ag.OK() {
+			return out, fmt.Errorf("parsing a group in the sub-groups list: %w", ag.Error())
+		}
+		for _, flag := range child.GetChildren() {
+			switch flag.Tag {
+			case "default_sub_group":
+				sg.IsAnnouncement = true
+			case "general_chat":
+				sg.IsGeneralChat = true
+			case "hidden_group":
+				sg.IsHidden = true
+			}
+		}
+		out = append(out, sg)
+	}
+	return out, nil
+}
+
+// fetchSubGroups sends exactly the IQ whatsmeow's GetSubGroups sends (iq get,
+// <sub_groups/> to the community) through DangerousInternals, only so that
+// parseSubGroupsNode can read the fields GetSubGroups drops. Read-only.
+func fetchSubGroups(ctx context.Context, client *whatsmeow.Client, community types.JID) ([]communitySubGroup, error) {
+	res, err := client.DangerousInternals().SendGroupIQ(ctx, whatsmeow.DangerousInfoQueryType("get"), community, waBinary.Node{Tag: "sub_groups"})
+	if err != nil {
+		return nil, err
+	}
+	return parseSubGroupsNode(res)
+}
+
+// subGroupJSON describes one group of a community. hidden, is_general_chat and
+// size come only from WhatsApp's full list; for a joined_only entry hidden and
+// is_general_chat are null (unknown) and size is the joined group's own count.
+func subGroupJSON(jid types.JID, name string, isAnnouncement, joined bool, hidden, generalChat, size any) map[string]any {
 	return map[string]any{
 		"jid":                   jid.String(),
 		"name":                  name,
 		"is_announcement_group": isAnnouncement,
 		"joined":                joined,
+		"hidden":                hidden,
+		"is_general_chat":       generalChat,
+		"size":                  size,
 	}
+}
+
+func optionalCount(n int) any {
+	if n <= 0 {
+		return nil
+	}
+	return n
 }
 
 // buildCommunities turns the joined-groups list into one entry per community.
 // serverSubGroups holds WhatsApp's full sub-group list per community (it also
 // names groups we have not joined); communities missing from it fall back to
 // the linked groups we are in, and say so in sub_groups_source.
-func buildCommunities(joined []*types.GroupInfo, serverSubGroups map[types.JID][]*types.GroupLinkTarget, self []types.JID) []map[string]any {
+func buildCommunities(joined []*types.GroupInfo, serverSubGroups map[types.JID][]communitySubGroup, self []types.JID) []map[string]any {
 	parents := map[types.JID]*types.GroupInfo{}
 	linked := map[types.JID][]*types.GroupInfo{}
 	joinedSet := map[types.JID]bool{}
@@ -178,12 +252,16 @@ func buildCommunities(joined []*types.GroupInfo, serverSubGroups map[types.JID][
 		source := "server"
 		if targets, ok := serverSubGroups[jid]; ok {
 			for _, t := range targets {
-				subs = append(subs, subGroupJSON(t.JID, t.Name, t.IsDefaultSubGroup, joinedSet[t.JID]))
+				subs = append(subs, subGroupJSON(t.JID, t.Name, t.IsAnnouncement, joinedSet[t.JID], t.IsHidden, t.IsGeneralChat, optionalCount(t.Size)))
 			}
 		} else {
 			source = "joined_only"
 			for _, g := range linked[jid] {
-				subs = append(subs, subGroupJSON(g.JID, g.Name, g.IsDefaultSubGroup, true))
+				size := g.ParticipantCount
+				if size == 0 {
+					size = len(g.Participants)
+				}
+				subs = append(subs, subGroupJSON(g.JID, g.Name, g.IsDefaultSubGroup, true, nil, nil, optionalCount(size)))
 			}
 		}
 		// Announcement group first, then by name.
@@ -293,7 +371,7 @@ func registerCommunityRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth 
 			jsonErr(w, http.StatusBadGateway, "listing joined groups failed: "+err.Error())
 			return
 		}
-		serverSubGroups := map[types.JID][]*types.GroupLinkTarget{}
+		serverSubGroups := map[types.JID][]communitySubGroup{}
 		warn := map[string]string{}
 		if withSubGroups {
 			var parents []types.JID
@@ -302,8 +380,8 @@ func registerCommunityRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth 
 					parents = append(parents, g.JID)
 				}
 			}
-			serverSubGroups, warn = collectSubGroups(parents, func(jid types.JID) ([]*types.GroupLinkTarget, error) {
-				return client.GetSubGroups(ctx, jid)
+			serverSubGroups, warn = collectSubGroups(parents, func(jid types.JID) ([]communitySubGroup, error) {
+				return fetchSubGroups(ctx, client, jid)
 			})
 		}
 		communities := filterCommunities(buildCommunities(joined, serverSubGroups, selfJIDs(client)), only)

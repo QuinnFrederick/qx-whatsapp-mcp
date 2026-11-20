@@ -79,10 +79,15 @@ Response: `{"success": true, "jid": "…", "url": "https://…" | null, "id"?, "
 ### Group object
 
 ```json
-{"jid": "…@g.us", "name": "…", "description": "…", "announce": false, "locked": false,
- "member_add": "all_members", "join_approval": false,
+{"jid": "…@g.us", "name": "…", "description": "…", "description_id": "3EB0…",
+ "announce": false, "locked": false, "member_add": "all_members", "join_approval": false,
  "participants": [{"jid", "phone", "lid", "is_admin", "is_super_admin"}]}
 ```
+
+`description_id` is WhatsApp's concurrency token for the description: every change must
+quote the id it replaces (`prev`), and a mismatch is a `409 conflict` ("another member
+changed the description recently" on the phone). The bridge sends it automatically; it is
+exposed so a bad value (for example the literal string `undefined`) can be diagnosed.
 
 ## Notes
 

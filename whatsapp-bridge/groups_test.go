@@ -133,6 +133,24 @@ func TestParticipantJSONSurfacesErrors(t *testing.T) {
 	}
 }
 
+func TestGroupInfoJSONExposesDescriptionID(t *testing.T) {
+	info := &types.GroupInfo{
+		JID:       types.NewJID("120363012345678901", types.GroupServer),
+		GroupName: types.GroupName{Name: "Trip"},
+		GroupTopic: types.GroupTopic{
+			Topic:   "Plans",
+			TopicID: "3EB0ABCDEF0123456789",
+		},
+	}
+	got := groupInfoJSON(info)
+	if got["description"] != "Plans" || got["description_id"] != "3EB0ABCDEF0123456789" {
+		t.Fatalf("description/description_id = %v/%v", got["description"], got["description_id"])
+	}
+	if parts, ok := got["participants"].([]map[string]any); !ok || len(parts) != 0 {
+		t.Fatalf("participants = %v, want empty slice", got["participants"])
+	}
+}
+
 // The real auth wrapper is covered by auth_test.go; an identity wrapper keeps
 // these focused on request validation. A nil client is deliberate: every
 // validation failure must be reported before the client is touched, and once

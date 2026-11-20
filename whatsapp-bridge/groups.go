@@ -35,7 +35,15 @@ const (
 	// answer those with item-not-found. It is only paid when there is
 	// something to apply, and it respects request cancellation.
 	postCreateSettleDelay = 1500 * time.Millisecond
-	groupRequestTimeout   = 60 * time.Second
+	// groupRequestTimeout bounds all the WhatsApp round-trips of one request. It
+	// must stay well under the HTTP server's WriteTimeout (60s in main.go): the
+	// server has been seen to never answer a malformed description IQ, and if
+	// the handler is still waiting when WriteTimeout fires the connection is
+	// simply dropped and the client sees a reset instead of a warning.
+	groupRequestTimeout = 40 * time.Second
+	// groupInfoTimeout is a separate budget for the final GetGroupInfo so the
+	// response still carries the group's real state after a slow setting.
+	groupInfoTimeout      = 10 * time.Second
 	pictureRequestTimeout = 20 * time.Second
 )
 
@@ -254,14 +262,18 @@ func groupInfoJSON(info *types.GroupInfo) map[string]any {
 		parts = append(parts, participantJSON(p))
 	}
 	return map[string]any{
-		"jid":           info.JID.String(),
-		"name":          info.Name,
-		"description":   info.Topic,
-		"announce":      info.IsAnnounce,
-		"locked":        info.IsLocked,
-		"member_add":    memberAddModeString(info.MemberAddMode),
-		"join_approval": info.IsJoinApprovalRequired,
-		"participants":  parts,
+		"jid":         info.JID.String(),
+		"name":        info.Name,
+		"description": info.Topic,
+		// description_id is WhatsApp's optimistic-concurrency token for the
+		// description (sent back as prev on the next change). Exposed because a
+		// bad value here is what makes a description impossible to edit.
+		"description_id": info.TopicID,
+		"announce":       info.IsAnnounce,
+		"locked":         info.IsLocked,
+		"member_add":     memberAddModeString(info.MemberAddMode),
+		"join_approval":  info.IsJoinApprovalRequired,
+		"participants":   parts,
 	}
 }
 
@@ -279,7 +291,16 @@ func applySettings(ctx context.Context, client *whatsmeow.Client, jid types.JID,
 		}
 	}
 	if desc != nil {
-		if err := client.SetGroupDescription(ctx, jid, *desc); err != nil {
+		// SetGroupTopic, not SetGroupDescription. WhatsApp's own clients send
+		// <description id="<new random id>" prev="<id being replaced>"> and
+		// <description delete="true" …/> to clear. SetGroupDescription sends a
+		// bare <description><body/></description>: the server accepts that
+		// once and stores the id as the literal string "undefined", after which
+		// every later change from ANY client (the phone included) is answered
+		// with 409 conflict, and an empty body without delete is never answered
+		// at all. SetGroupTopic fetches the current id for prev and generates
+		// the new one; an empty description becomes a delete.
+		if err := client.SetGroupTopic(ctx, jid, "", "", *desc); err != nil {
 			warn["description"] = err.Error()
 		}
 	}
@@ -308,6 +329,15 @@ func applySettings(ctx context.Context, client *whatsmeow.Client, jid types.JID,
 		}
 	}
 	return warn
+}
+
+// fetchGroupInfo reads the group's current state on its own short budget, so a
+// setting that used up the request's context still yields a response that
+// shows what the group looks like now.
+func fetchGroupInfo(parent context.Context, client *whatsmeow.Client, jid types.JID) (*types.GroupInfo, error) {
+	ctx, cancel := context.WithTimeout(parent, groupInfoTimeout)
+	defer cancel()
+	return client.GetGroupInfo(ctx, jid)
 }
 
 func registerGroupRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth func(http.HandlerFunc) http.HandlerFunc) {
@@ -380,7 +410,7 @@ func registerGroupRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth func
 			sleepCtx(ctx, postCreateSettleDelay)
 			warn = applySettings(ctx, client, info.JID, nil, desc, nil, nil, req.MemberAdd, nil)
 			// Re-fetch so the response reflects the applied settings.
-			if fresh, ferr := client.GetGroupInfo(ctx, info.JID); ferr == nil {
+			if fresh, ferr := fetchGroupInfo(r.Context(), client, info.JID); ferr == nil {
 				info = fresh
 			} else {
 				warn["refresh"] = "group created but re-fetching its info failed: " + ferr.Error()
@@ -437,7 +467,7 @@ func registerGroupRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth func
 		defer cancel()
 		// With no settings supplied this is simply a read of the current state.
 		warn := applySettings(ctx, client, jid, req.Name, req.Description, req.Announce, req.Locked, req.MemberAdd, req.JoinApproval)
-		info, err := client.GetGroupInfo(ctx, jid)
+		info, err := fetchGroupInfo(r.Context(), client, jid)
 		if err != nil {
 			jsonErr(w, http.StatusBadGateway, "settings applied but info fetch failed: "+err.Error())
 			return

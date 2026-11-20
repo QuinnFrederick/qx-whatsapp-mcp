@@ -1,13 +1,21 @@
-# WhatsApp MCP Server
+# qx-whatsapp-mcp
 
-[![CI](https://github.com/verygoodplugins/whatsapp-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/verygoodplugins/whatsapp-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Go 1.25+](https://img.shields.io/badge/go-1.25+-00ADD8.svg)](https://go.dev/)
 
 A Model Context Protocol (MCP) server for WhatsApp, enabling Claude to read and send WhatsApp messages.
 
-> Originally created by [Luke Harries](https://github.com/lharries/whatsapp-mcp). Maintained by [Very Good Plugins](https://verygoodplugins.com/?utm_source=github).
+> [!WARNING]
+> **Early, experimental software (version 0.1). Use at your own risk.**
+> This is an unofficial project. It is not affiliated with, endorsed by or connected to
+> WhatsApp or Meta. It signs in to your personal account as a linked device through an
+> unofficial client library ([whatsmeow](https://github.com/tulir/whatsmeow)), which can
+> break without notice, and WhatsApp may restrict accounts that use unofficial clients.
+
+> Fork of [verygoodplugins/whatsapp-mcp](https://github.com/verygoodplugins/whatsapp-mcp)
+> (itself a fork of [Luke Harries' original](https://github.com/lharries/whatsapp-mcp)) that adds
+> group management and WhatsApp Communities. See [`FORK.md`](./FORK.md).
 
 <p align="center">
   <a href="https://github.com/user-attachments/assets/9475af1d-2369-4315-9ccc-823dba2c5c32"><strong>Watch the WhatsApp MCP demo video</strong></a>
@@ -28,59 +36,150 @@ A Model Context Protocol (MCP) server for WhatsApp, enabling Claude to read and 
 - **Webhook Integration**: Forward incoming messages to external services
 - **Local Storage**: All messages stored locally in SQLite - only sent to Claude when you allow it
 
-## Installation
+## Getting started
 
-### Prerequisites
+You need git, Go 1.25+, [uv](https://docs.astral.sh/uv/), a C compiler (the SQLite driver
+uses cgo: Xcode Command Line Tools on macOS, `build-essential` on Debian/Ubuntu) and Claude
+Code or Claude Desktop. FFmpeg is optional (voice notes). uv fetches Python 3.11+ if you
+don't have it.
 
-- Go 1.25+
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/) package manager
-- Claude Desktop or Cursor
-- FFmpeg (optional, for voice message conversion)
+### 1. Run the bridge and install the MCP server
 
-### Quick Start
+```bash
+git clone -b feature/group-management https://github.com/QuinnFrederick/qx-whatsapp-mcp.git
+cd qx-whatsapp-mcp/whatsapp-bridge
+go run .
+```
 
-1. **Clone the repository**
+✅ The first run compiles for a minute or two, then prints a `WHATSAPP BRIDGE AUTH TOKEN —
+first-time setup` box and a QR code. Leave it running. The token is saved to
+`store/.bridge-token`; the MCP server reads it from there, so there is nothing to copy.
 
-   ```bash
-   git clone https://github.com/verygoodplugins/whatsapp-mcp.git
-   cd whatsapp-mcp
-   ```
+In a second terminal:
 
-2. **Start the WhatsApp bridge**
+```bash
+cd qx-whatsapp-mcp/whatsapp-mcp-server
+uv sync
+```
 
-   ```bash
-   cd whatsapp-bridge
-   go run .
-   ```
+✅ Finishes without errors. You don't start the MCP server yourself; Claude launches it (step 3).
 
-   On first start, the bridge prints and stores a local REST API token at
-   `whatsapp-bridge/store/.bridge-token`. Scan the QR code with WhatsApp on
-   your phone to authenticate.
+### 2. Link your WhatsApp account
 
-3. **Configure Claude Desktop**
+On your phone open WhatsApp → **Settings → Linked devices → Link a device** (Android: ⋮ menu →
+**Linked devices**) and scan the QR code in the bridge terminal. Scan within about a minute:
+the bridge prints only the first code.
 
-   Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+✅ The bridge prints:
 
-   ```json
-   {
-     "mcpServers": {
-       "whatsapp": {
-         "command": "uv",
-         "args": [
-           "--directory",
-           "/path/to/whatsapp-mcp/whatsapp-mcp-server",
-           "run",
-           "main.py"
-         ]
-       }
-     }
-   }
-   ```
+```text
+Successfully connected and authenticated!
+✓ Connected to WhatsApp! Type 'help' for commands.
+REST server is running. Press Ctrl+C to disconnect and exit.
+```
 
-   Replace `/path/to/whatsapp-mcp` with your actual path.
+and your phone lists a new linked device. Chat history then syncs in the background: recent
+chats within minutes, longer for big accounts. Check the bridge from another terminal (its API
+only starts after pairing):
 
-4. **Restart Claude Desktop**
+```bash
+cd qx-whatsapp-mcp/whatsapp-bridge
+curl -s -H "Authorization: Bearer $(cat store/.bridge-token)" http://127.0.0.1:8080/api/health
+```
+
+✅ `{"connected":true,"status":"ok",...}`
+
+The link persists: later runs of `go run .` reconnect without a QR code. **To re-pair** (a
+different account, after unlinking the device on your phone, or to fetch more history), stop
+the bridge with Ctrl+C and move the session aside:
+
+```bash
+mv store/whatsapp.db store/whatsapp.db.bak
+go run .
+```
+
+A new QR code appears; `store/messages.db`, your local message archive, is kept. To name the
+device in your phone's list, pair with `WHATSAPP_DEVICE_NAME="My laptop" go run .`. To ask the
+phone for more than its default ~3 months of history, pair with `go run . --full-history-pair`
+([details](#requesting-full-history)).
+
+### 3. Connect it to Claude
+
+**Claude Code**: from `qx-whatsapp-mcp/whatsapp-mcp-server`:
+
+```bash
+claude mcp add --scope user whatsapp -- uv --directory "$PWD" run main.py
+```
+
+✅ `claude mcp list` shows `whatsapp` as connected.
+
+**Claude Desktop**: print the two absolute paths you need:
+
+```bash
+cd qx-whatsapp-mcp/whatsapp-mcp-server && pwd && which uv
+```
+
+Open **Settings → Developer → Edit Config** (`~/Library/Application Support/Claude/claude_desktop_config.json`
+on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows) and add, with your paths:
+
+```json
+{
+  "mcpServers": {
+    "whatsapp": {
+      "command": "/absolute/path/to/uv",
+      "args": ["--directory", "/absolute/path/to/qx-whatsapp-mcp/whatsapp-mcp-server", "run", "main.py"]
+    }
+  }
+}
+```
+
+Use the full path to `uv`: Claude Desktop doesn't inherit your shell's `PATH`. Quit Claude
+Desktop completely and reopen it.
+
+✅ `whatsapp` and its tools appear in the chat box's tools menu.
+
+Cursor: see [Cursor IDE Configuration](#cursor-ide-configuration). The claude.ai web and mobile
+apps need a remote HTTPS connector; this server runs locally over stdio by default (see
+[MCP transport](#mcp-transport-stdio-vs-httpsse)).
+
+### 4. Try it
+
+Ask Claude:
+
+> Which of my WhatsApp chats have unread messages? Summarise them.
+
+✅ Claude asks to use `list_chats` and `list_messages`, then answers with your real chats. If
+it finds none, history is still syncing; try again in a few minutes.
+
+Reading is safe to experiment with. Sending reaches real people, so try it on yourself first:
+"Send 'hello from Claude' to +<your number>" should land in your own "message yourself" chat.
+Then try "List my WhatsApp communities and their groups."
+
+### Troubleshooting setup
+
+- **The QR code expired before you scanned it.** Only the first code is printed and the next
+  attempt is minutes away: press Ctrl+C and run `go run .` again.
+- **The QR code is garbled.** It is drawn with Unicode block characters: widen the terminal or
+  shrink the font.
+- **`Client outdated` or HTTP 405 while pairing.** WhatsApp raised its minimum client version:
+  `git pull`, then `go run .` again.
+- **`cgo: C compiler "gcc" not found` or `go-sqlite3 requires cgo`.** Install a C compiler (see
+  the start of this section; on Windows see [Windows](#windows)).
+- **Claude doesn't list the WhatsApp tools.** Check the paths are absolute (including `uv` for
+  Claude Desktop), restart Claude fully, and read the server log
+  (`~/Library/Logs/Claude/mcp-server-whatsapp.log` for Claude Desktop on macOS).
+- **Sending fails with `Request error … Connection refused`.** The bridge isn't running or isn't
+  paired yet. Reading still works, because it uses the local database.
+- **Tools fail with `HTTP 401`.** The MCP server and the bridge are using different tokens, which
+  happens when they aren't in the same checkout. Set `WHATSAPP_BRIDGE_TOKEN` to the contents of
+  `whatsapp-bridge/store/.bridge-token` for the MCP server (`-e` with `claude mcp add`, an
+  `"env"` block in the Desktop config).
+- **Chats or older messages are missing.** Sync may still be running, and phones share only
+  recent history by default. See [Requesting full history](#requesting-full-history) and
+  [single-chat history](#requesting-history-for-a-single-chat-on-demand).
+- **"Device limit reached" on the phone.** Unlink an old device under Linked devices.
+
+More in [Troubleshooting](#troubleshooting).
 
 ### Updating
 
@@ -292,11 +391,14 @@ Download media from a received message.
 
 ### Group Operations (fork)
 
-This fork adds group management and profile pictures: `resolve_contacts` (turn spoken names
-into contacts and flag ambiguous ones, with avatar thumbnails), `get_profile_picture`,
-`create_group`, `update_group_settings` and `update_group_participants`. Tool parameters,
-the bridge endpoints behind them (`/api/group/*`, `/api/profile-picture`) and their JSON
-shapes are documented in [`FORK.md`](./FORK.md).
+This fork adds group management, WhatsApp Communities and profile pictures:
+`resolve_contacts` (turn spoken names into contacts and flag ambiguous ones, with avatar
+thumbnails), `get_profile_picture`, `create_group` (optionally inside a community),
+`update_group_settings`, `update_group_participants`, `get_group_invite_link`,
+`list_communities`, `list_community_participants`, `create_community` and
+`update_community_groups`. Tool parameters, the bridge endpoints behind them
+(`/api/group/*`, `/api/community/*`, `/api/communities`, `/api/profile-picture`), their JSON
+shapes and what WhatsApp does not allow are documented in [`FORK.md`](./FORK.md).
 
 ### Chat Operations
 

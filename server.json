@@ -3,7 +3,7 @@
   "name": "io.github.QuinnFrederick/qx-whatsapp-mcp",
   "title": "qx-whatsapp-mcp",
   "description": "Read, search, and send WhatsApp messages via Claude",
-  "version": "0.6.0",
+  "version": "0.1.0",
   "websiteUrl": "https://github.com/QuinnFrederick/qx-whatsapp-mcp",
   "repository": {
     "url": "https://github.com/QuinnFrederick/qx-whatsapp-mcp",
@@ -13,7 +13,7 @@
     {
       "registryType": "pypi",
       "identifier": "whatsapp-mcp-server",
-      "version": "0.6.0",
+      "version": "0.1.0",
       "transport": {
         "type": "stdio"
       }

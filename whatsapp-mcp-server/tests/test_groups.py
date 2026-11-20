@@ -505,19 +505,38 @@ def test_get_group_invite_link_validates_and_surfaces_bridge_errors(monkeypatch)
 # --- communities ----------------------------------------------------------
 
 
-def test_list_communities_gets_with_auth_and_sub_group_flag(monkeypatch):
+def test_list_communities_gets_with_auth_filter_and_sub_group_flag(monkeypatch):
     monkeypatch.setenv("WHATSAPP_BRIDGE_TOKEN", "tok")
     community = {"jid": "100@g.us", "name": "Forest", "sub_groups": []}
     calls = _capture_get(monkeypatch, payload={"success": True, "communities": [community]})
 
     result = whatsapp.list_communities()
-    whatsapp.list_communities(include_sub_groups=False)
+    whatsapp.list_communities(community_jid=" 100@g.us ")
+    whatsapp.list_communities(include_sub_groups=True)
+    whatsapp.list_communities(community_jid="100@g.us", include_sub_groups=False)
 
     assert result["communities"] == [community]
     assert calls[0]["url"].endswith("/communities")
-    assert [c["params"] for c in calls] == [{"sub_groups": "1"}, {"sub_groups": "0"}]
+    # Unset include_sub_groups leaves the rate-limit-aware default to the bridge.
+    assert [c["params"] for c in calls] == [
+        {},
+        {"community_jid": "100@g.us"},
+        {"sub_groups": "1"},
+        {"community_jid": "100@g.us", "sub_groups": "0"},
+    ]
     assert calls[0]["headers"] == {"Authorization": "Bearer tok"}
     assert calls[0]["kwargs"]["timeout"] > 40  # above the bridge's own 40s budget
+
+
+def test_list_communities_rejects_non_group_filter(monkeypatch):
+    calls = _capture_get(monkeypatch, payload={"success": True})
+
+    result = whatsapp.list_communities(community_jid="12025551234@s.whatsapp.net")
+
+    assert result["success"] is False
+    assert "community_jid" in result["message"]
+    assert result["communities"] == []
+    assert calls == []
 
 
 def test_list_communities_reports_old_bridge_and_keeps_shape(monkeypatch):
@@ -666,7 +685,7 @@ def test_mcp_tools_delegate_with_keyword_arguments(monkeypatch):
     mcp_main.update_group_participants("g@g.us", ["1"], "promote")
     mcp_main.get_profile_picture("1", preview=False)
     mcp_main.resolve_contacts(["Harry"], max_matches=2, with_avatars=False)
-    mcp_main.list_communities(include_sub_groups=False)
+    mcp_main.list_communities("100@g.us")
     mcp_main.update_community_groups("100@g.us", ["101@g.us"], "link")
     mcp_main.get_group_invite_link("100@g.us")
     mcp_main.create_community("Forest")
@@ -697,7 +716,7 @@ def test_mcp_tools_delegate_with_keyword_arguments(monkeypatch):
     assert seen["participants"] == (("g@g.us", ["1"], "promote"), {})
     assert seen["pic"] == (("1",), {"preview": False})
     assert seen["resolve"] == ((["Harry"],), {"max_matches": 2, "with_avatars": False})
-    assert seen["communities"] == ((), {"include_sub_groups": False})
+    assert seen["communities"] == ((), {"community_jid": "100@g.us", "include_sub_groups": None})
     assert seen["link"] == (("100@g.us", ["101@g.us"], "link"), {})
     assert seen["invite"] == (("100@g.us",), {"reset": False})
     assert seen["community"] == (("Forest",), {"description": None})

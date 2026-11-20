@@ -666,7 +666,7 @@ def get_group_invite_link(group_jid: str, reset: bool = False) -> dict[str, Any]
 
 
 @mcp.tool()
-def list_communities(include_sub_groups: bool = True) -> dict[str, Any]:
+def list_communities(community_jid: str | None = None, include_sub_groups: bool | None = None) -> dict[str, Any]:
     """List the WhatsApp Communities you belong to, with the groups inside each one.
 
     A community is a parent that holds several groups. Its announcement group is created
@@ -674,10 +674,16 @@ def list_communities(include_sub_groups: bool = True) -> dict[str, Any]:
     Use the community jid from here with create_group(community_jid=...),
     update_community_groups, list_community_participants and get_group_invite_link.
 
+    Without community_jid you get a quick overview: every community, with the groups in it
+    that you have joined. Pass one community_jid to see that community's complete group
+    list, including groups you have not joined.
+
     Args:
-        include_sub_groups: True (default) asks WhatsApp for each community's full group list,
-            including groups you have not joined. False is faster and shows only the groups
-            you are in.
+        community_jid: Optional community JID (ending in @g.us) to show just that community,
+            with its complete group list
+        include_sub_groups: Leave unset normally. True fetches the complete group list for
+            every community, but WhatsApp rate-limits that after about nine communities and
+            the rest then show only your own groups; False skips it even for one community.
 
     Returns:
         success and communities, each with jid, name, description, you_are_admin (true/false,
@@ -686,7 +692,7 @@ def list_communities(include_sub_groups: bool = True) -> dict[str, Any]:
         sub_groups_source is "server" for the full list or "joined_only" when only your own
         groups could be listed; warnings says why for each such community.
     """
-    return whatsapp_list_communities(include_sub_groups=include_sub_groups)
+    return whatsapp_list_communities(community_jid=community_jid, include_sub_groups=include_sub_groups)
 
 
 @mcp.tool()

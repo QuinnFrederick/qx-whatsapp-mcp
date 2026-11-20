@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -219,17 +220,69 @@ func buildCommunities(joined []*types.GroupInfo, serverSubGroups map[types.JID][
 	return out
 }
 
+// collectSubGroups fetches each community's full group list. A failure is a
+// per-community warning; after a 429 rate-overlimit the remaining communities
+// are skipped rather than queried, since every further IQ would be refused too
+// and only prolongs the limit.
+func collectSubGroups[T any](parents []types.JID, fetch func(types.JID) (T, error)) (map[types.JID]T, map[string]string) {
+	got := map[types.JID]T{}
+	warn := map[string]string{}
+	rateLimited := false
+	for _, jid := range parents {
+		if rateLimited {
+			warn[jid.String()] = "full group list skipped: WhatsApp is rate-limiting these queries; ask for this community on its own later"
+			continue
+		}
+		v, err := fetch(jid)
+		if err != nil {
+			rateLimited = errors.Is(err, whatsmeow.ErrIQRateOverLimit)
+			warn[jid.String()] = "full group list unavailable, showing only groups you are in: " + err.Error()
+			continue
+		}
+		got[jid] = v
+	}
+	return got, warn
+}
+
+// filterCommunities keeps only the community with the given JID; an empty JID
+// keeps them all.
+func filterCommunities(all []map[string]any, only types.JID) []map[string]any {
+	if only.IsEmpty() {
+		return all
+	}
+	for _, c := range all {
+		if c["jid"] == only.String() {
+			return []map[string]any{c}
+		}
+	}
+	return []map[string]any{}
+}
+
 func registerCommunityRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth func(http.HandlerFunc) http.HandlerFunc) {
 	// GET /api/communities?sub_groups=1
 	//
-	// One "participating" IQ for every group we are in, then (unless
-	// sub_groups=0) one sub_groups IQ per community for its full group list.
+	// GET /api/communities?community_jid=...&sub_groups=0|1
+	//
+	// One "participating" IQ lists every group we are in, which is enough for
+	// an overview (each community with the groups we joined). The full group
+	// list costs one sub_groups IQ per community, and WhatsApp answers a burst
+	// of those with 429 rate-overlimit (seen live after nine), so it is only
+	// fetched by default when a single community_jid is asked for; sub_groups=1
+	// fetches it for every community and stops at the first 429.
 	mux.HandleFunc("/api/communities", auth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			jsonErr(w, http.StatusMethodNotAllowed, "GET only")
 			return
 		}
-		withSubGroups := queryBool(r, "sub_groups", true)
+		var only types.JID
+		if raw := r.URL.Query().Get("community_jid"); strings.TrimSpace(raw) != "" {
+			var err error
+			if only, err = parseGroupJID(raw, "community_jid"); err != nil {
+				jsonErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		withSubGroups := queryBool(r, "sub_groups", !only.IsEmpty())
 		if !requireClient(w, client) {
 			return
 		}
@@ -243,19 +296,22 @@ func registerCommunityRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth 
 		serverSubGroups := map[types.JID][]*types.GroupLinkTarget{}
 		warn := map[string]string{}
 		if withSubGroups {
+			var parents []types.JID
 			for _, g := range joined {
-				if g == nil || !g.IsParent {
-					continue
+				if g != nil && g.IsParent && (only.IsEmpty() || g.JID == only) {
+					parents = append(parents, g.JID)
 				}
-				targets, err := client.GetSubGroups(ctx, g.JID)
-				if err != nil {
-					warn[g.JID.String()] = "full group list unavailable, showing only groups you are in: " + err.Error()
-					continue
-				}
-				serverSubGroups[g.JID] = targets
 			}
+			serverSubGroups, warn = collectSubGroups(parents, func(jid types.JID) ([]*types.GroupLinkTarget, error) {
+				return client.GetSubGroups(ctx, jid)
+			})
 		}
-		resp := map[string]any{"success": true, "communities": buildCommunities(joined, serverSubGroups, selfJIDs(client))}
+		communities := filterCommunities(buildCommunities(joined, serverSubGroups, selfJIDs(client)), only)
+		if !only.IsEmpty() && len(communities) == 0 {
+			jsonErr(w, http.StatusNotFound, "you are not in a community with that jid")
+			return
+		}
+		resp := map[string]any{"success": true, "communities": communities}
 		if len(warn) > 0 {
 			resp["warnings"] = warn
 		}

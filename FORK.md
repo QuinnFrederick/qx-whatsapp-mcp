@@ -23,7 +23,7 @@ any ambiguous names (showing `avatar_url` thumbnails) → `create_group` with th
 | `update_group_settings(group_jid, name=None, description=None, announce=None, locked=None, member_add=None, join_approval=None)` | Changes only the fields passed. With no fields it returns the current state. |
 | `update_group_participants(group_jid, participants, action)` | `action` is `add`, `remove`, `promote` or `demote`; per-participant `ok` flags in `results`. |
 | `get_group_invite_link(group_jid, reset=False)` | The group's (or community's) `https://chat.whatsapp.com/…` link and `code`. `reset=True` revokes the current link and returns a new one. Admins only. |
-| `list_communities(include_sub_groups=True)` | Communities you belong to, each with `announcement_group` and `sub_groups` (`jid`, `name`, `is_announcement_group`, `joined`). The full group list (including groups you have not joined) comes from WhatsApp; if that query fails for a community, only your own groups are listed and `sub_groups_source` is `joined_only`. |
+| `list_communities(community_jid=None, include_sub_groups=None)` | Communities you belong to, each with `announcement_group` and `sub_groups` (`jid`, `name`, `is_announcement_group`, `joined`). Without `community_jid` it is a quick overview listing the groups you have joined (`sub_groups_source: joined_only`); with one `community_jid` it shows that community's complete group list from WhatsApp (`server`). `include_sub_groups=True` fetches complete lists for every community, but see the rate-limit note below. |
 | `list_community_participants(community_jid, with_names=True)` | Everyone in any of the community's groups, once each: `jid`, `phone`, `lid` and (with `with_names`) a `name` from the local contact store. |
 | `create_community(name, description=None)` | Creates a community with you as admin. WhatsApp adds its announcement group automatically (returned as `announcement_group`); add groups with `create_group(community_jid=…)` or `update_community_groups`. |
 | `update_community_groups(community_jid, group_jids, action)` | `action` is `link` (move existing groups into the community) or `unlink` (make them standalone again); per-group `ok` flags in `results`. Needs admin rights on the community and each group; the announcement group cannot be unlinked. |
@@ -96,15 +96,21 @@ Errors: `403` (not an admin, or not in the group), `404` (no such group), `502` 
 
 Response: `{"success": true, "jid": "…", "url": "https://…" | null, "id"?, "type"?, "reason"?: "not_set" | "hidden" | "unchanged"}`.
 
-### `GET /api/communities?sub_groups=1`
+### `GET /api/communities?community_jid=<jid>&sub_groups=0|1`
 
 Response: `{"success": true, "communities": [{"jid", "name", "description", "you_are_admin",
 "announcement_group": {"jid", "name", "joined"} | null, "sub_groups": [{"jid", "name",
 "is_announcement_group", "joined"}], "sub_groups_source": "server" | "joined_only"}],
-"warnings"?: {"<community jid>": "…"}}`. One IQ lists every joined group; with
-`sub_groups=1` (default) one more per community fetches its full group list.
-`you_are_admin` is `null` when WhatsApp did not include you in the community's participant
-list.
+"warnings"?: {"<community jid>": "…"}}`. One IQ lists every joined group. The complete
+group list is one more IQ per community; it is fetched by default only when
+`community_jid` names a single community (`404` if you are not in it), or for every
+community with `sub_groups=1`. `you_are_admin` is `null` when WhatsApp did not include you
+in the community's participant list.
+
+**Rate limit:** WhatsApp answers a burst of `sub_groups` queries with `429 rate-overlimit`
+(seen live after nine in a row). The bridge stops at the first 429 and marks the remaining
+communities as skipped in `warnings` (they fall back to `joined_only`) rather than keep
+hitting a limited account.
 
 ### `GET /api/community/participants?community_jid=<jid>`
 

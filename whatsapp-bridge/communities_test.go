@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -141,6 +143,8 @@ func TestCommunityEndpointValidation(t *testing.T) {
 		{"create with no client is 503", http.MethodPost, "/api/community/create", `{"name":"Forest"}`, http.StatusServiceUnavailable},
 		{"list with no client is 503", http.MethodGet, "/api/communities", "", http.StatusServiceUnavailable},
 		{"list without sub-groups with no client is 503", http.MethodGet, "/api/communities?sub_groups=0", "", http.StatusServiceUnavailable},
+		{"list rejects user JID filter", http.MethodGet, "/api/communities?community_jid=1@s.whatsapp.net", "", http.StatusBadRequest},
+		{"list one community with no client is 503", http.MethodGet, "/api/communities?community_jid=1@g.us", "", http.StatusServiceUnavailable},
 
 		{"groups rejects GET", http.MethodGet, "/api/community/groups", "", http.StatusMethodNotAllowed},
 		{"groups rejects invalid JSON", http.MethodPost, "/api/community/groups", "{", http.StatusBadRequest},
@@ -241,5 +245,50 @@ func TestCommunityMembersJSON(t *testing.T) {
 	}
 	if none := communityMembersJSON(context.Background(), []types.JID{lid}, nil); none[0]["phone"] != nil {
 		t.Errorf("nil resolver should leave phone null, got %v", none[0])
+	}
+}
+
+func TestFilterCommunities(t *testing.T) {
+	all := []map[string]any{{"jid": "1@g.us"}, {"jid": "2@g.us"}}
+	if got := filterCommunities(all, types.JID{}); len(got) != 2 {
+		t.Errorf("no filter kept %d, want 2", len(got))
+	}
+	if got := filterCommunities(all, gjid("2")); len(got) != 1 || got[0]["jid"] != "2@g.us" {
+		t.Errorf("filter 2 = %v", got)
+	}
+	if got := filterCommunities(all, gjid("3")); got == nil || len(got) != 0 {
+		t.Errorf("unknown filter = %#v, want empty non-nil slice", got)
+	}
+}
+
+func TestCollectSubGroupsStopsAfterRateLimit(t *testing.T) {
+	var asked []string
+	fetch := func(jid types.JID) (int, error) {
+		asked = append(asked, jid.User)
+		switch jid.User {
+		case "2":
+			return 0, errors.New("item-not-found")
+		case "3":
+			return 0, fmt.Errorf("info query returned status 429: %w", whatsmeow.ErrIQRateOverLimit)
+		}
+		return 7, nil
+	}
+	got, warn := collectSubGroups([]types.JID{gjid("1"), gjid("2"), gjid("3"), gjid("4"), gjid("5")}, fetch)
+
+	if strings.Join(asked, ",") != "1,2,3" {
+		t.Errorf("queried %v; a plain error must not stop the loop, a 429 must", asked)
+	}
+	if len(got) != 1 || got[gjid("1")] != 7 {
+		t.Errorf("results = %v, want only community 1", got)
+	}
+	for _, id := range []string{"2", "3"} {
+		if !strings.Contains(warn[id+"@g.us"], "unavailable") {
+			t.Errorf("warning for %s = %q", id, warn[id+"@g.us"])
+		}
+	}
+	for _, id := range []string{"4", "5"} {
+		if !strings.Contains(warn[id+"@g.us"], "rate-limiting") {
+			t.Errorf("warning for %s = %q, want a skipped-for-rate-limit note", id, warn[id+"@g.us"])
+		}
 	}
 }

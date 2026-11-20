@@ -1524,13 +1524,24 @@ def get_profile_picture(jid: str, preview: bool = True, timeout: float = 15) -> 
 # community, is the announcement group.
 
 
-def list_communities(include_sub_groups: bool = True, timeout: float = 50) -> dict[str, Any]:
+def list_communities(
+    community_jid: str | None = None, include_sub_groups: bool | None = None, timeout: float = 50
+) -> dict[str, Any]:
     """List the communities the account belongs to via GET /api/communities.
 
-    The bridge budget is 40s (one IQ for all joined groups plus one per community),
-    so the client timeout sits just above it.
+    ``include_sub_groups`` left as None uses the bridge default: the full group list
+    only when a single ``community_jid`` is asked for (WhatsApp rate-limits bursts of
+    that query). The bridge budget is 40s, so the client timeout sits just above it.
     """
-    result = _bridge_get("/communities", {"sub_groups": "1" if include_sub_groups else "0"}, timeout)
+    params: dict[str, str] = {}
+    if community_jid is not None and community_jid.strip():
+        community = _validate_group_jid(community_jid)
+        if not community:
+            return {**_failure("community_jid must be a community JID ending in @g.us"), "communities": []}
+        params["community_jid"] = community
+    if include_sub_groups is not None:
+        params["sub_groups"] = "1" if include_sub_groups else "0"
+    result = _bridge_get("/communities", params, timeout)
     result.setdefault("communities", [])
     return result
 

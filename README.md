@@ -952,7 +952,9 @@ go run .
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT, see [LICENSE](LICENSE). Original work (c) 2025 Luke Harries; modifications (c) 2026 Very Good
+Plugins and, for qx-whatsapp-mcp, (c) 2026 Quinn Frederick. Unofficial; not affiliated with
+WhatsApp or Meta.
 
 ## Credits & History
 

@@ -534,8 +534,9 @@ def create_group(
     locked: bool | None = None,
     member_add: str | None = None,
     join_approval: bool | None = None,
+    community_jid: str | None = None,
 ) -> dict[str, Any]:
-    """Create a new WhatsApp group and add people to it.
+    """Create a new WhatsApp group and add people to it, optionally inside a community.
 
     Resolve names to JIDs first with resolve_contacts and pass the chosen jids here. Your own
     account is added automatically. People whose privacy settings block being added are
@@ -553,11 +554,14 @@ def create_group(
         member_add: Who may add new members: "all_members" or "admins_only". Omit for default.
         join_approval: True means an admin must approve anyone joining via invite link;
                        False lets them join straight away. Omit for default (no approval).
+        community_jid: Create the group inside this community (its jid from list_communities)
+                       instead of as a standalone group. You must be an admin of the community.
+                       To move an existing group into a community use update_community_groups.
 
     Returns:
         success, group (jid, name, description, announce, locked, member_add, join_approval,
-        participants), plus warnings for any setting that could not be applied and
-        failed_participants for anyone WhatsApp refused to add.
+        community_jid, participants), plus warnings for any setting that could not be applied
+        and failed_participants for anyone WhatsApp refused to add.
     """
     return whatsapp_create_group(
         name,
@@ -567,6 +571,7 @@ def create_group(
         locked=locked,
         member_add=member_add,
         join_approval=join_approval,
+        community_jid=community_jid,
     )
 
 

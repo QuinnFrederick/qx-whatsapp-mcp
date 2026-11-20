@@ -19,7 +19,7 @@ any ambiguous names (showing `avatar_url` thumbnails) → `create_group` with th
 |---|---|
 | `resolve_contacts(names, max_matches=5, with_avatars=True)` | For each name returns `status` (`unique` / `ambiguous` / `none`), `matches` (jid, name, phone, avatar_url) and `total_matches`. Avatars are fetched only for ambiguous names and failures leave `avatar_url` null. |
 | `get_profile_picture(jid, preview=True)` | Short-lived CDN URL of a contact's or group's picture. `url` is null (with a `reason`) when there is no picture or it is hidden from you. |
-| `create_group(name, participants, description=None, announce=None, locked=None, member_add=None, join_approval=None)` | Creates a group. `announce=True` → only admins can post. `locked=True` → only admins edit group info. `member_add` is `"all_members"` or `"admins_only"`. `join_approval=True` → admins approve invite-link joiners. Participants WhatsApp refused are returned in `failed_participants`. |
+| `create_group(name, participants, description=None, announce=None, locked=None, member_add=None, join_approval=None, community_jid=None)` | Creates a group. `announce=True` → only admins can post. `locked=True` → only admins edit group info. `member_add` is `"all_members"` or `"admins_only"`. `join_approval=True` → admins approve invite-link joiners. `community_jid` creates it inside that community (community admins only). Participants WhatsApp refused are returned in `failed_participants`. |
 | `update_group_settings(group_jid, name=None, description=None, announce=None, locked=None, member_add=None, join_approval=None)` | Changes only the fields passed. With no fields it returns the current state. |
 | `update_group_participants(group_jid, participants, action)` | `action` is `add`, `remove`, `promote` or `demote`; per-participant `ok` flags in `results`. |
 | `list_communities(include_sub_groups=True)` | Communities you belong to, each with `announcement_group` and `sub_groups` (`jid`, `name`, `is_announcement_group`, `joined`). The full group list (including groups you have not joined) comes from WhatsApp; if that query fails for a community, only your own groups are listed and `sub_groups_source` is `joined_only`. |
@@ -46,13 +46,15 @@ All endpoints require the usual bearer token and return JSON with `success` and,
   "locked": false,
   "member_add": "admins_only",
   "join_approval": false,
-  "ephemeral_seconds": 0
+  "ephemeral_seconds": 0,
+  "community_jid": "1203…@g.us"
 }
 ```
 
 Response: `{"success": true, "group": {…}, "warnings": {…}?, "failed_participants": […]?}`.
 `announce`, `locked` and `join_approval` are sent in the create request itself;
-`description` and `member_add` are applied right after (a short settle delay is paid only
+`community_jid` goes in the create request too (as `linked_parent`), so the group is born
+inside the community. `description` and `member_add` are applied right after (a short settle delay is paid only
 when one of them is set). `warnings` maps a setting name to the error if it did not stick.
 `failed_participants` lists people WhatsApp would not add, with `error`, an `error_hint`
 (403 = privacy settings, 408 = recently left, 409 = already a member) and, for 403, an

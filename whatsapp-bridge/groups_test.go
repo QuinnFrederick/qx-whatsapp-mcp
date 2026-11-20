@@ -217,6 +217,22 @@ func TestGroupNamePreservesEmojiSequences(t *testing.T) {
 	}
 }
 
+func TestParseGroupJID(t *testing.T) {
+	jid, err := parseGroupJID("  120363012345678901@g.us ", "community_jid")
+	if err != nil || jid.String() != "120363012345678901@g.us" {
+		t.Fatalf("parseGroupJID valid = %v, %v", jid, err)
+	}
+	for raw, want := range map[string]string{
+		"":                           "community_jid is required",
+		"12025551234@s.whatsapp.net": "community_jid must be a @g.us JID",
+		"12025551234":                "community_jid must be a @g.us JID",
+	} {
+		if _, err := parseGroupJID(raw, "community_jid"); err == nil || err.Error() != want {
+			t.Errorf("parseGroupJID(%q) err = %v, want %q", raw, err, want)
+		}
+	}
+}
+
 // The real auth wrapper is covered by auth_test.go; an identity wrapper keeps
 // these focused on request validation. A nil client is deliberate: every
 // validation failure must be reported before the client is touched, and once
@@ -241,6 +257,9 @@ func TestGroupEndpointValidation(t *testing.T) {
 		{"create requires participants", http.MethodPost, "/api/group/create", `{"name":"Trip"}`, http.StatusBadRequest},
 		{"create rejects bad member_add before creating", http.MethodPost, "/api/group/create", `{"name":"Trip","participants":["12025551234"],"member_add":"friends"}`, http.StatusBadRequest},
 		{"create with no client is 503", http.MethodPost, "/api/group/create", `{"name":"Trip","participants":["12025551234"]}`, http.StatusServiceUnavailable},
+		{"create rejects user JID as community", http.MethodPost, "/api/group/create", `{"name":"Trip","participants":["12025551234"],"community_jid":"12025551234@s.whatsapp.net"}`, http.StatusBadRequest},
+		{"create rejects malformed community", http.MethodPost, "/api/group/create", `{"name":"Trip","participants":["12025551234"],"community_jid":"not a jid@"}`, http.StatusBadRequest},
+		{"create in community with no client is 503", http.MethodPost, "/api/group/create", `{"name":"Trip","participants":["12025551234"],"community_jid":"120363012345678901@g.us"}`, http.StatusServiceUnavailable},
 
 		{"settings rejects GET", http.MethodGet, "/api/group/settings", "", http.StatusMethodNotAllowed},
 		{"settings requires group_jid", http.MethodPost, "/api/group/settings", `{"name":"x"}`, http.StatusBadRequest},

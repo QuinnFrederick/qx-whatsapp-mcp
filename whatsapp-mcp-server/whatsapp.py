@@ -1407,6 +1407,7 @@ def create_group(
     locked: bool | None = None,
     member_add: str | None = None,
     join_approval: bool | None = None,
+    community_jid: str | None = None,
 ) -> dict[str, Any]:
     """Create a group via POST /api/group/create. See main.create_group for the field semantics."""
     clean_name, err = _validate_group_name(name)
@@ -1419,6 +1420,11 @@ def create_group(
         mode = _normalize_member_add(member_add)
     except ValueError as e:
         return _failure(str(e))
+    community = None
+    if community_jid is not None and community_jid.strip():
+        community = _validate_group_jid(community_jid)
+        if not community:
+            return _failure("community_jid must be a community JID ending in @g.us")
 
     payload: dict[str, Any] = {"name": clean_name, "participants": members}
     if description and description.strip():
@@ -1431,6 +1437,8 @@ def create_group(
         payload["member_add"] = mode
     if join_approval is not None:
         payload["join_approval"] = bool(join_approval)
+    if community:
+        payload["community_jid"] = community
     return _bridge_post("/group/create", payload)
 
 

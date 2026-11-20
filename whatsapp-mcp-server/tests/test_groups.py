@@ -152,6 +152,26 @@ async def test_mcp_tool_output_keeps_emoji_sequences_intact(monkeypatch):
     assert name in content[0].text  # emitted as raw UTF-8, not split or escaped
 
 
+def test_create_group_inside_community_sends_community_jid(monkeypatch):
+    calls = _capture_post(monkeypatch, payload={"success": True})
+
+    whatsapp.create_group("Archery", ["12025551234"], community_jid=" 120363000000000100@g.us ")
+    whatsapp.create_group("Standalone", ["12025551234"], community_jid="  ")
+
+    assert calls[0]["json"]["community_jid"] == "120363000000000100@g.us"
+    assert "community_jid" not in calls[1]["json"]
+
+
+def test_create_group_rejects_non_group_community_jid(monkeypatch):
+    calls = _capture_post(monkeypatch, payload={"success": True})
+
+    result = whatsapp.create_group("Archery", ["12025551234"], community_jid="12025551234@s.whatsapp.net")
+
+    assert result["success"] is False
+    assert "community_jid" in result["message"]
+    assert calls == []
+
+
 def test_create_group_surfaces_bridge_error_json(monkeypatch):
     _capture_post(monkeypatch, payload={"success": False, "message": "create failed: boom"}, status_code=502)
 
@@ -505,7 +525,14 @@ def test_mcp_tools_delegate_with_keyword_arguments(monkeypatch):
 
     assert seen["create"] == (
         ("Trip", ["1"]),
-        {"description": None, "announce": True, "locked": None, "member_add": "admins_only", "join_approval": None},
+        {
+            "description": None,
+            "announce": True,
+            "locked": None,
+            "member_add": "admins_only",
+            "join_approval": None,
+            "community_jid": None,
+        },
     )
     assert seen["settings"] == (
         ("g@g.us",),

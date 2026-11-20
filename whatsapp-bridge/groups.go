@@ -61,6 +61,9 @@ type groupCreateRequest struct {
 	MemberAdd    *string `json:"member_add,omitempty"`    // "all_members" | "admins_only"
 	JoinApproval *bool   `json:"join_approval,omitempty"` // admins must approve joiners
 	Ephemeral    *uint32 `json:"ephemeral_seconds,omitempty"`
+	// CommunityJID creates the group inside that community (linked_parent in
+	// the create IQ) instead of as a standalone group.
+	CommunityJID string `json:"community_jid,omitempty"`
 }
 
 type groupSettingsRequest struct {
@@ -134,6 +137,19 @@ func parseUserJIDs(raw []string) ([]types.JID, error) {
 		return nil, fmt.Errorf("at least one participant is required")
 	}
 	return out, nil
+}
+
+// parseGroupJID parses a required @g.us JID; field names it in the error.
+func parseGroupJID(raw, field string) (types.JID, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return types.JID{}, fmt.Errorf("%s is required", field)
+	}
+	jid, err := types.ParseJID(raw)
+	if err != nil || jid.Server != types.GroupServer {
+		return types.JID{}, fmt.Errorf("%s must be a @g.us JID", field)
+	}
+	return jid.ToNonAD(), nil
 }
 
 func memberAddMode(s string) (types.GroupMemberAddMode, error) {
@@ -387,6 +403,13 @@ func registerGroupRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth func
 				return
 			}
 		}
+		var community types.JID
+		if strings.TrimSpace(req.CommunityJID) != "" {
+			if community, err = parseGroupJID(req.CommunityJID, "community_jid"); err != nil {
+				jsonErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
 		if !requireClient(w, client) {
 			return
 		}
@@ -409,9 +432,16 @@ func registerGroupRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth func
 		if req.Ephemeral != nil && *req.Ephemeral > 0 {
 			cr.GroupEphemeral = types.GroupEphemeral{IsEphemeral: true, DisappearingTimer: *req.Ephemeral}
 		}
+		if !community.IsEmpty() {
+			cr.LinkedParentJID = community
+		}
 		info, err := client.CreateGroup(ctx, cr)
 		if err != nil {
-			jsonErr(w, http.StatusBadGateway, "create failed: "+err.Error())
+			msg := "create failed: " + err.Error()
+			if !community.IsEmpty() {
+				msg += " (adding a group to a community needs community admin rights)"
+			}
+			jsonErr(w, http.StatusBadGateway, msg)
 			return
 		}
 		// The create response is the only place per-participant refusals

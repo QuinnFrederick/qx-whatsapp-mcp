@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -171,6 +172,48 @@ func TestValidateGroupNameCountsCharactersUpTo100(t *testing.T) {
 				t.Fatalf("validateGroupName(%d runes) err = %v, wantErr %v", len([]rune(tc.in)), err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// Names must reach WhatsApp and come back byte-for-byte. Emoji such as
+// heart-on-fire are several code points glued together by a zero-width joiner
+// (U+200D) and a variation selector (U+FE0F); neither is Unicode White_Space, so
+// strings.TrimSpace keeps them even at the very end of a name, and JSON encoding
+// in both directions preserves them.
+func TestGroupNamePreservesEmojiSequences(t *testing.T) {
+	heartOnFire := "\u2764\ufe0f\u200d\U0001f525" // red heart + VS16 + ZWJ + fire
+	names := []string{
+		"Commons \U0001f333" + heartOnFire + " Forest of Wild Love",
+		"Ends in a ZWJ sequence " + heartOnFire,
+		"Ends in a variation selector \u2764\ufe0f",
+		"Family \U0001f468\u200d\U0001f469\u200d\U0001f467",
+	}
+	for _, name := range names {
+		if got := strings.TrimSpace(" " + name + "\n"); got != name {
+			t.Errorf("TrimSpace changed %+q to %+q", name, got)
+		}
+		if err := validateGroupName(name); err != nil {
+			t.Errorf("validateGroupName(%+q) = %v", name, err)
+		}
+		// Request side: an ASCII-escaped JSON body decodes to the exact runes.
+		escaped, _ := json.Marshal(map[string]string{"name": name})
+		escaped = []byte(strings.NewReplacer("\u200d", `\u200d`, "\ufe0f", `\ufe0f`).Replace(string(escaped)))
+		var req groupSettingsRequest
+		if err := json.Unmarshal(escaped, &req); err != nil || req.Name == nil || *req.Name != name {
+			t.Errorf("decoding %s gave %v (err %v), want %+q", escaped, req.Name, err, name)
+		}
+		if strings.Contains(name, "\u200d") && !strings.Contains(string(escaped), `\u200d`) {
+			t.Errorf("test setup: %s should carry an escaped ZWJ", escaped)
+		}
+		// Response side: the group object round-trips through JSON unchanged.
+		out, err := json.Marshal(groupInfoJSON(&types.GroupInfo{GroupName: types.GroupName{Name: name}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var back map[string]any
+		if err := json.Unmarshal(out, &back); err != nil || back["name"] != name {
+			t.Errorf("response name = %+q, want %+q (err %v)", back["name"], name, err)
+		}
 	}
 }
 

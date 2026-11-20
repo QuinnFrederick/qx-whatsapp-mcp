@@ -25,7 +25,9 @@ any ambiguous names (showing `avatar_url` thumbnails) → `create_group` with th
 
 Participants may be given as JIDs (`…@s.whatsapp.net`, `…@lid`) or as phone numbers with
 country code in any formatting (`+1 (202) 555-1234`). Group names are limited to 100
-characters by WhatsApp.
+characters by WhatsApp, counted in code points, so an emoji built from several code points
+(❤️‍🔥 is four) counts as that many. Names are passed through byte-for-byte: only leading
+and trailing whitespace is trimmed, and zero-width joiners and variation selectors are kept.
 
 ## Bridge REST endpoints
 

@@ -1,5 +1,7 @@
 """Tests for the group management, profile picture and resolve_contacts helpers (fork)."""
 
+import json
+
 import pytest
 
 import main as mcp_main
@@ -113,6 +115,41 @@ def test_group_name_limit_is_100_characters_not_bytes(monkeypatch):
 
     assert whatsapp.MAX_GROUP_NAME_LENGTH == 100
     assert [c["json"]["name"] for c in calls] == [n for n in names for _ in range(2)]
+
+
+# Heart-on-fire is red heart + VS16 (U+FE0F) + ZWJ (U+200D) + fire. Neither joiner is
+# whitespace, so str.strip() must keep them, even at the end of a name.
+HEART_ON_FIRE = "❤️‍\U0001f525"
+EMOJI_NAMES = [
+    "Commons \U0001f333" + HEART_ON_FIRE + " Forest of Wild Love",
+    "Ends in a ZWJ sequence " + HEART_ON_FIRE,
+    "Ends in a variation selector ❤️",
+    "Family \U0001f468‍\U0001f469‍\U0001f467",
+]
+
+
+@pytest.mark.parametrize("name", EMOJI_NAMES)
+def test_group_names_preserve_zwj_sequences_and_variation_selectors(monkeypatch, name):
+    calls = _capture_post(monkeypatch, payload={"success": True, "group": {"name": name}})
+
+    created = whatsapp.create_group(f"  {name}\n", ["12025551234"])
+    whatsapp.update_group_settings("120363012345678901@g.us", name=f" {name} ")
+
+    assert [c["json"]["name"] for c in calls] == [name, name]
+    # requests serialises with json.dumps (ASCII escapes); decoding gives back every code point.
+    assert json.loads(json.dumps(calls[0]["json"]))["name"] == name
+    assert created["group"]["name"] == name
+
+
+async def test_mcp_tool_output_keeps_emoji_sequences_intact(monkeypatch):
+    name = EMOJI_NAMES[0]
+    _capture_post(monkeypatch, payload={"success": True, "group": {"name": name}})
+
+    result = await mcp_main.mcp.call_tool("update_group_settings", {"group_jid": "120363012345678901@g.us"})
+
+    content = result[0] if isinstance(result, tuple) else result
+    assert json.loads(content[0].text)["group"]["name"] == name
+    assert name in content[0].text  # emitted as raw UTF-8, not split or escaped
 
 
 def test_create_group_surfaces_bridge_error_json(monkeypatch):

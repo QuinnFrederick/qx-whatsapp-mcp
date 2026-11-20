@@ -705,6 +705,9 @@ def list_communities(community_jid: str | None = None, include_sub_groups: bool 
 def list_community_participants(community_jid: str, with_names: bool = True) -> dict[str, Any]:
     """List the members of a WhatsApp Community: everyone in any of its groups, once each.
 
+    Only community admins can do this; WhatsApp refuses it for ordinary members (you_are_admin
+    in list_communities tells you which communities qualify).
+
     Args:
         community_jid: The community's JID from list_communities, ending in @g.us
         with_names: True (default) adds each member's contact name from your address book or

@@ -24,7 +24,7 @@ any ambiguous names (showing `avatar_url` thumbnails) → `create_group` with th
 | `update_group_participants(group_jid, participants, action)` | `action` is `add`, `remove`, `promote` or `demote`; per-participant `ok` flags in `results`. |
 | `get_group_invite_link(group_jid, reset=False)` | The group's (or community's) `https://chat.whatsapp.com/…` link and `code`. `reset=True` revokes the current link and returns a new one. Admins only. |
 | `list_communities(community_jid=None, include_sub_groups=None)` | Communities you belong to, each with `announcement_group` and `sub_groups` (`jid`, `name`, `is_announcement_group`, `joined`, `hidden`, `is_general_chat`, `size`). Without `community_jid` it is a quick overview listing the groups you have joined (`sub_groups_source: joined_only`); with one `community_jid` it shows that community's complete group list from WhatsApp (`server`). `include_sub_groups=True` fetches complete lists for every community, but see the rate-limit note below. |
-| `list_community_participants(community_jid, with_names=True)` | Everyone in any of the community's groups, once each: `jid`, `phone`, `lid` and (with `with_names`) a `name` from the local contact store. |
+| `list_community_participants(community_jid, with_names=True)` | Everyone in any of the community's groups, once each: `jid`, `phone`, `lid` and (with `with_names`) a `name` from the local contact store. Community admins only. |
 | `create_community(name, description=None)` | Creates a community with you as admin. WhatsApp adds its announcement group automatically (returned as `announcement_group`); add groups with `create_group(community_jid=…)` or `update_community_groups`. |
 | `update_community_groups(community_jid, group_jids, action)` | `action` is `link` (move existing groups into the community) or `unlink` (make them standalone again); per-group `ok` flags in `results`. Needs admin rights on the community and each group; the announcement group cannot be unlinked. |
 
@@ -140,7 +140,9 @@ see it). What this fork can and cannot do with that:
 
 Response: `{"success": true, "community_jid", "count", "participants": [{"jid", "phone",
 "lid"}]}` from the `linked_groups_participants` IQ. `phone`/`lid` are filled from the local
-LID map where known and `null` otherwise. The MCP server adds `name`.
+LID map where known and `null` otherwise. The MCP server adds `name`. WhatsApp answers
+`403 forbidden` unless you are a community admin (verified live), reported as `403` "only
+community admins can list a community's members"; an unknown community is `404`.
 
 ### `POST /api/community/create`
 

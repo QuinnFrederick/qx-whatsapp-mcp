@@ -359,3 +359,21 @@ func TestParseSubGroupsNode(t *testing.T) {
 		t.Error("a group without id or jid must be an error")
 	}
 }
+
+func TestCommunityMembersError(t *testing.T) {
+	cases := []struct {
+		err        error
+		wantStatus int
+		wantMsg    string
+	}{
+		{fmt.Errorf("info query returned status 403: %w", whatsmeow.ErrIQForbidden), http.StatusForbidden, "only community admins"},
+		{fmt.Errorf("info query returned status 404: %w", whatsmeow.ErrIQNotFound), http.StatusNotFound, "does not exist"},
+		{errors.New("timed out"), http.StatusBadGateway, "timed out"},
+	}
+	for _, tc := range cases {
+		status, msg := communityMembersError(tc.err)
+		if status != tc.wantStatus || !strings.Contains(msg, tc.wantMsg) {
+			t.Errorf("communityMembersError(%v) = %d %q, want %d containing %q", tc.err, status, msg, tc.wantStatus, tc.wantMsg)
+		}
+	}
+}

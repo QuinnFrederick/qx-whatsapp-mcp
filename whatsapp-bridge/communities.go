@@ -75,6 +75,19 @@ func communityMembersJSON(ctx context.Context, members []types.JID, lids lidReso
 	return out
 }
 
+// communityMembersError maps the linked_groups_participants failures seen
+// live onto an actionable status: WhatsApp answers 403 forbidden unless the
+// account is a community admin.
+func communityMembersError(err error) (int, string) {
+	switch {
+	case errors.Is(err, whatsmeow.ErrIQForbidden):
+		return http.StatusForbidden, "only community admins can list a community's members"
+	case errors.Is(err, whatsmeow.ErrIQNotFound):
+		return http.StatusNotFound, "that community does not exist"
+	}
+	return http.StatusBadGateway, "listing community members failed: " + err.Error()
+}
+
 // parseGroupJIDs parses a list of @g.us JIDs, dropping blanks and duplicates.
 func parseGroupJIDs(raw []string, field string) ([]types.JID, error) {
 	out := make([]types.JID, 0, len(raw))
@@ -417,7 +430,8 @@ func registerCommunityRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth 
 		defer cancel()
 		members, err := client.GetLinkedGroupsParticipants(ctx, community)
 		if err != nil {
-			jsonErr(w, http.StatusBadGateway, "listing community members failed: "+err.Error())
+			status, msg := communityMembersError(err)
+			jsonErr(w, status, msg)
 			return
 		}
 		parts := communityMembersJSON(ctx, members, client.Store.LIDs)

@@ -1,7 +1,7 @@
 # Fork additions
 
-This fork of [`verygoodplugins/whatsapp-mcp`](https://github.com/verygoodplugins/whatsapp-mcp)
-adds WhatsApp **group management**, **communities** and **profile pictures**. Everything
+**qx-whatsapp-mcp** is a fork of [`verygoodplugins/whatsapp-mcp`](https://github.com/verygoodplugins/whatsapp-mcp)
+that adds WhatsApp **group management**, **communities** and **profile pictures**. Everything
 lives in new files so the diff against upstream stays small:
 
 | Component | File | Upstream touch |

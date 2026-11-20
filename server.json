@@ -1,12 +1,12 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.verygoodplugins/whatsapp-mcp",
-  "title": "WhatsApp MCP",
+  "name": "io.github.QuinnFrederick/qx-whatsapp-mcp",
+  "title": "qx-whatsapp-mcp",
   "description": "Read, search, and send WhatsApp messages via Claude",
   "version": "0.6.0",
-  "websiteUrl": "https://verygoodplugins.com/?utm_source=mcp-registry",
+  "websiteUrl": "https://github.com/QuinnFrederick/qx-whatsapp-mcp",
   "repository": {
-    "url": "https://github.com/verygoodplugins/whatsapp-mcp",
+    "url": "https://github.com/QuinnFrederick/qx-whatsapp-mcp",
     "source": "github"
   },
   "packages": [

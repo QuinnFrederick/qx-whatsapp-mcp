@@ -38,6 +38,9 @@ from whatsapp import (
     list_chats as whatsapp_list_chats,
 )
 from whatsapp import (
+    list_communities as whatsapp_list_communities,
+)
+from whatsapp import (
     list_messages as whatsapp_list_messages,
 )
 from whatsapp import (
@@ -623,6 +626,30 @@ def update_group_participants(group_jid: str, participants: list[str], action: s
         and for failures an error code, error_hint and sometimes an add_request invite code.
     """
     return whatsapp_update_group_participants(group_jid, participants, action)
+
+
+@mcp.tool()
+def list_communities(include_sub_groups: bool = True) -> dict[str, Any]:
+    """List the WhatsApp Communities you belong to, with the groups inside each one.
+
+    A community is a parent that holds several groups. Its announcement group is created
+    with the community: every community member is in it and only admins can post there.
+    Use the community jid from here with create_group(community_jid=...),
+    update_community_groups, list_community_participants and get_group_invite_link.
+
+    Args:
+        include_sub_groups: True (default) asks WhatsApp for each community's full group list,
+            including groups you have not joined. False is faster and shows only the groups
+            you are in.
+
+    Returns:
+        success and communities, each with jid, name, description, you_are_admin (true/false,
+        or null if unknown), announcement_group (jid, name and joined, or null) and
+        sub_groups (jid, name, is_announcement_group, joined), announcement group first.
+        sub_groups_source is "server" for the full list or "joined_only" when only your own
+        groups could be listed; warnings says why for each such community.
+    """
+    return whatsapp_list_communities(include_sub_groups=include_sub_groups)
 
 
 def shutdown_handler(signum, frame):

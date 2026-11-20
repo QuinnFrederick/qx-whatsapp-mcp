@@ -277,8 +277,21 @@ func groupInfoJSON(info *types.GroupInfo) map[string]any {
 		"locked":         info.IsLocked,
 		"member_add":     memberAddModeString(info.MemberAddMode),
 		"join_approval":  info.IsJoinApprovalRequired,
-		"participants":   parts,
+		// Community fields: is_community marks a community (parent) itself,
+		// community_jid is the community a group belongs to, and
+		// is_announcement_group marks that community's announcement group.
+		"is_community":          info.IsParent,
+		"community_jid":         optionalJID(info.LinkedParentJID),
+		"is_announcement_group": info.IsDefaultSubGroup,
+		"participants":          parts,
 	}
+}
+
+func optionalJID(j types.JID) any {
+	if j.IsEmpty() {
+		return nil
+	}
+	return j.String()
 }
 
 // applySettings applies whichever optional settings are non-nil. It returns a
@@ -596,4 +609,6 @@ func registerGroupRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth func
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}))
+
+	registerCommunityRoutes(mux, client, auth)
 }

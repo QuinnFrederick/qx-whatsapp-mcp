@@ -1499,6 +1499,23 @@ def get_profile_picture(jid: str, preview: bool = True, timeout: float = 15) -> 
     return result
 
 
+# --- Communities ------------------------------------------------------------
+# Bridge endpoints in whatsapp-bridge/communities.go. A community is a parent
+# group; its groups ("sub-groups") link to it, and one of them, created with the
+# community, is the announcement group.
+
+
+def list_communities(include_sub_groups: bool = True, timeout: float = 50) -> dict[str, Any]:
+    """List the communities the account belongs to via GET /api/communities.
+
+    The bridge budget is 40s (one IQ for all joined groups plus one per community),
+    so the client timeout sits just above it.
+    """
+    result = _bridge_get("/communities", {"sub_groups": "1" if include_sub_groups else "0"}, timeout)
+    result.setdefault("communities", [])
+    return result
+
+
 def _match_rank(query: str, name: str | None) -> int:
     """Lower is better: exact name, then prefix, then whole-word, then anything else."""
     q = query.casefold().strip()

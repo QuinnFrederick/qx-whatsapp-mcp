@@ -450,6 +450,34 @@ def test_resolve_contacts_merges_lid_and_phone_rows_for_same_person(monkeypatch)
     assert result["matches"][1]["phone"] is None
 
 
+# --- communities ----------------------------------------------------------
+
+
+def test_list_communities_gets_with_auth_and_sub_group_flag(monkeypatch):
+    monkeypatch.setenv("WHATSAPP_BRIDGE_TOKEN", "tok")
+    community = {"jid": "100@g.us", "name": "Forest", "sub_groups": []}
+    calls = _capture_get(monkeypatch, payload={"success": True, "communities": [community]})
+
+    result = whatsapp.list_communities()
+    whatsapp.list_communities(include_sub_groups=False)
+
+    assert result["communities"] == [community]
+    assert calls[0]["url"].endswith("/communities")
+    assert [c["params"] for c in calls] == [{"sub_groups": "1"}, {"sub_groups": "0"}]
+    assert calls[0]["headers"] == {"Authorization": "Bearer tok"}
+    assert calls[0]["kwargs"]["timeout"] > 40  # above the bridge's own 40s budget
+
+
+def test_list_communities_reports_old_bridge_and_keeps_shape(monkeypatch):
+    _capture_get(monkeypatch, payload=None, status_code=404, text="404 page not found")
+
+    result = whatsapp.list_communities()
+
+    assert result["success"] is False
+    assert "404" in result["message"]
+    assert result["communities"] == []
+
+
 # --- MCP tool wrappers ----------------------------------------------------
 
 
@@ -464,12 +492,16 @@ def test_mcp_tools_delegate_with_keyword_arguments(monkeypatch):
     )
     monkeypatch.setattr(mcp_main, "whatsapp_get_profile_picture", lambda *a, **k: seen.setdefault("pic", (a, k)) or {})
     monkeypatch.setattr(mcp_main, "whatsapp_resolve_contacts", lambda *a, **k: seen.setdefault("resolve", (a, k)) or [])
+    monkeypatch.setattr(
+        mcp_main, "whatsapp_list_communities", lambda *a, **k: seen.setdefault("communities", (a, k)) or {}
+    )
 
     mcp_main.create_group("Trip", ["1"], announce=True, member_add="admins_only")
     mcp_main.update_group_settings("g@g.us", locked=True)
     mcp_main.update_group_participants("g@g.us", ["1"], "promote")
     mcp_main.get_profile_picture("1", preview=False)
     mcp_main.resolve_contacts(["Harry"], max_matches=2, with_avatars=False)
+    mcp_main.list_communities(include_sub_groups=False)
 
     assert seen["create"] == (
         ("Trip", ["1"]),
@@ -489,3 +521,4 @@ def test_mcp_tools_delegate_with_keyword_arguments(monkeypatch):
     assert seen["participants"] == (("g@g.us", ["1"], "promote"), {})
     assert seen["pic"] == (("1",), {"preview": False})
     assert seen["resolve"] == ((["Harry"],), {"max_matches": 2, "with_avatars": False})
+    assert seen["communities"] == ((), {"include_sub_groups": False})

@@ -1,12 +1,12 @@
 # Fork additions
 
 This fork of [`verygoodplugins/whatsapp-mcp`](https://github.com/verygoodplugins/whatsapp-mcp)
-adds WhatsApp **group management** and **profile pictures**. Everything lives in new
-files so the diff against upstream stays small:
+adds WhatsApp **group management**, **communities** and **profile pictures**. Everything
+lives in new files so the diff against upstream stays small:
 
 | Component | File | Upstream touch |
 |---|---|---|
-| Bridge endpoints | `whatsapp-bridge/groups.go` (+ `groups_test.go`) | one `registerGroupRoutes(...)` line in `main.go` |
+| Bridge endpoints | `whatsapp-bridge/groups.go`, `communities.go` (+ `_test.go`) | one `registerGroupRoutes(...)` line in `main.go` (it registers the community routes too) |
 | MCP tools | `whatsapp-mcp-server/main.py`, `whatsapp.py` (appended section) | tool definitions and bridge client functions |
 | Tests | `whatsapp-mcp-server/tests/test_groups.py` | + three rows in `test_bridge_auth.py` |
 
@@ -22,6 +22,7 @@ any ambiguous names (showing `avatar_url` thumbnails) → `create_group` with th
 | `create_group(name, participants, description=None, announce=None, locked=None, member_add=None, join_approval=None)` | Creates a group. `announce=True` → only admins can post. `locked=True` → only admins edit group info. `member_add` is `"all_members"` or `"admins_only"`. `join_approval=True` → admins approve invite-link joiners. Participants WhatsApp refused are returned in `failed_participants`. |
 | `update_group_settings(group_jid, name=None, description=None, announce=None, locked=None, member_add=None, join_approval=None)` | Changes only the fields passed. With no fields it returns the current state. |
 | `update_group_participants(group_jid, participants, action)` | `action` is `add`, `remove`, `promote` or `demote`; per-participant `ok` flags in `results`. |
+| `list_communities(include_sub_groups=True)` | Communities you belong to, each with `announcement_group` and `sub_groups` (`jid`, `name`, `is_announcement_group`, `joined`). The full group list (including groups you have not joined) comes from WhatsApp; if that query fails for a community, only your own groups are listed and `sub_groups_source` is `joined_only`. |
 
 Participants may be given as JIDs (`…@s.whatsapp.net`, `…@lid`) or as phone numbers with
 country code in any formatting (`+1 (202) 555-1234`). Group names are limited to 100
@@ -78,13 +79,27 @@ Response: `{"success": <all ok>, "action": "add", "results": [{"jid", "ok", "err
 
 Response: `{"success": true, "jid": "…", "url": "https://…" | null, "id"?, "type"?, "reason"?: "not_set" | "hidden" | "unchanged"}`.
 
+### `GET /api/communities?sub_groups=1`
+
+Response: `{"success": true, "communities": [{"jid", "name", "description", "you_are_admin",
+"announcement_group": {"jid", "name", "joined"} | null, "sub_groups": [{"jid", "name",
+"is_announcement_group", "joined"}], "sub_groups_source": "server" | "joined_only"}],
+"warnings"?: {"<community jid>": "…"}}`. One IQ lists every joined group; with
+`sub_groups=1` (default) one more per community fetches its full group list.
+`you_are_admin` is `null` when WhatsApp did not include you in the community's participant
+list.
+
 ### Group object
 
 ```json
 {"jid": "…@g.us", "name": "…", "description": "…", "description_id": "3EB0…",
  "announce": false, "locked": false, "member_add": "all_members", "join_approval": false,
+ "is_community": false, "community_jid": "…@g.us" | null, "is_announcement_group": false,
  "participants": [{"jid", "phone", "lid", "is_admin", "is_super_admin"}]}
 ```
+
+`is_community` is true for a community itself, `community_jid` names the community a group
+belongs to, and `is_announcement_group` marks that community's announcement group.
 
 `description_id` is WhatsApp's concurrency token for the description: every change must
 quote the id it replaces (`prev`), and a mismatch is a `409 conflict` ("another member
@@ -98,4 +113,4 @@ exposed so a bad value (for example the literal string `undefined`) can be diagn
   HTTP status in `message`.
 - WhatsApp decides who can be added. People who set "Who can add me to groups" to
   "nobody" or "my contacts" get an invite (`add_request`) instead of being added.
-- Outbound calls, communities and invite-link management are not covered.
+- Outbound calls and invite-link management are not covered.

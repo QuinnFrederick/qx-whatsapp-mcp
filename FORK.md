@@ -22,6 +22,7 @@ any ambiguous names (showing `avatar_url` thumbnails) → `create_group` with th
 | `create_group(name, participants, description=None, announce=None, locked=None, member_add=None, join_approval=None, community_jid=None)` | Creates a group. `announce=True` → only admins can post. `locked=True` → only admins edit group info. `member_add` is `"all_members"` or `"admins_only"`. `join_approval=True` → admins approve invite-link joiners. `community_jid` creates it inside that community (community admins only). Participants WhatsApp refused are returned in `failed_participants`. |
 | `update_group_settings(group_jid, name=None, description=None, announce=None, locked=None, member_add=None, join_approval=None)` | Changes only the fields passed. With no fields it returns the current state. |
 | `update_group_participants(group_jid, participants, action)` | `action` is `add`, `remove`, `promote` or `demote`; per-participant `ok` flags in `results`. |
+| `get_group_invite_link(group_jid, reset=False)` | The group's (or community's) `https://chat.whatsapp.com/…` link and `code`. `reset=True` revokes the current link and returns a new one. Admins only. |
 | `list_communities(include_sub_groups=True)` | Communities you belong to, each with `announcement_group` and `sub_groups` (`jid`, `name`, `is_announcement_group`, `joined`). The full group list (including groups you have not joined) comes from WhatsApp; if that query fails for a community, only your own groups are listed and `sub_groups_source` is `joined_only`. |
 | `update_community_groups(community_jid, group_jids, action)` | `action` is `link` (move existing groups into the community) or `unlink` (make them standalone again); per-group `ok` flags in `results`. Needs admin rights on the community and each group; the announcement group cannot be unlinked. |
 
@@ -78,6 +79,17 @@ Only the fields present are changed. Response: `{"success": <all applied>, "grou
 
 Response: `{"success": <all ok>, "action": "add", "results": [{"jid", "ok", "error"?, "error_hint"?, "add_request"?}]}`.
 
+### `POST /api/group/invite-link`
+
+```json
+{"group_jid": "1203…@g.us", "reset": false}
+```
+
+Response: `{"success": true, "group_jid", "link": "https://chat.whatsapp.com/…", "code",
+"reset"}`. Without `reset` the link is only read; `reset: true` revokes it and issues a new
+one. It is a POST either way so the destructive variant cannot be hit by a stray GET.
+Errors: `403` (not an admin, or not in the group), `404` (no such group), `502` otherwise.
+
 ### `GET /api/profile-picture?jid=<jid|phone|group>&preview=1`
 
 Response: `{"success": true, "jid": "…", "url": "https://…" | null, "id"?, "type"?, "reason"?: "not_set" | "hidden" | "unchanged"}`.
@@ -125,4 +137,4 @@ exposed so a bad value (for example the literal string `undefined`) can be diagn
   HTTP status in `message`.
 - WhatsApp decides who can be added. People who set "Who can add me to groups" to
   "nobody" or "my contacts" get an invite (`add_request`) instead of being added.
-- Outbound calls and invite-link management are not covered.
+- Outbound calls are not covered.

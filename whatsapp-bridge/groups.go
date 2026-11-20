@@ -76,6 +76,12 @@ type groupSettingsRequest struct {
 	JoinApproval *bool   `json:"join_approval,omitempty"`
 }
 
+type groupInviteLinkRequest struct {
+	GroupJID string `json:"group_jid"`
+	// Reset revokes the current link and returns a new one.
+	Reset bool `json:"reset,omitempty"`
+}
+
 type groupParticipantsRequest struct {
 	GroupJID     string   `json:"group_jid"`
 	Participants []string `json:"participants"`
@@ -364,6 +370,20 @@ func applySettings(ctx context.Context, client *whatsmeow.Client, jid types.JID,
 	return warn
 }
 
+// inviteLinkError maps whatsmeow's invite-link errors onto a status and a
+// message a caller can act on; anything else is a WhatsApp-side 502.
+func inviteLinkError(err error) (int, string) {
+	switch {
+	case errors.Is(err, whatsmeow.ErrGroupInviteLinkUnauthorized):
+		return http.StatusForbidden, "only group admins can see or reset the invite link"
+	case errors.Is(err, whatsmeow.ErrNotInGroup):
+		return http.StatusForbidden, "you are not a member of that group"
+	case errors.Is(err, whatsmeow.ErrGroupNotFound):
+		return http.StatusNotFound, "that group does not exist"
+	}
+	return http.StatusBadGateway, err.Error()
+}
+
 // fetchGroupInfo reads the group's current state on its own short budget, so a
 // setting that used up the request's context still yields a response that
 // shows what the group looks like now.
@@ -591,6 +611,45 @@ func registerGroupRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth func
 			resp["message"] = "some participants could not be updated; see results"
 		}
 		writeJSON(w, http.StatusOK, resp)
+	}))
+
+	// POST /api/group/invite-link {"group_jid", "reset"}
+	//
+	// Without reset this only reads the current link. POST either way so the
+	// destructive variant cannot be triggered by a stray GET.
+	mux.HandleFunc("/api/group/invite-link", auth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			jsonErr(w, http.StatusMethodNotAllowed, "POST only")
+			return
+		}
+		var req groupInviteLinkRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		jid, err := parseGroupJID(req.GroupJID, "group_jid")
+		if err != nil {
+			jsonErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !requireClient(w, client) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), groupRequestTimeout)
+		defer cancel()
+		link, err := client.GetGroupInviteLink(ctx, jid, req.Reset)
+		if err != nil {
+			status, msg := inviteLinkError(err)
+			jsonErr(w, status, msg)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success":   true,
+			"group_jid": jid.String(),
+			"link":      link,
+			"code":      strings.TrimPrefix(link, whatsmeow.InviteLinkPrefix),
+			"reset":     req.Reset,
+		})
 	}))
 
 	// GET /api/profile-picture?jid=...&preview=1

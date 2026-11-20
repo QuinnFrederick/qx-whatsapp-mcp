@@ -2,12 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -233,6 +236,26 @@ func TestParseGroupJID(t *testing.T) {
 	}
 }
 
+func TestInviteLinkError(t *testing.T) {
+	wrap := func(e error) error { return fmt.Errorf("%w: iq error 401", e) }
+	cases := []struct {
+		err        error
+		wantStatus int
+		wantMsg    string
+	}{
+		{wrap(whatsmeow.ErrGroupInviteLinkUnauthorized), http.StatusForbidden, "only group admins"},
+		{wrap(whatsmeow.ErrNotInGroup), http.StatusForbidden, "not a member"},
+		{wrap(whatsmeow.ErrGroupNotFound), http.StatusNotFound, "does not exist"},
+		{errors.New("timed out"), http.StatusBadGateway, "timed out"},
+	}
+	for _, tc := range cases {
+		status, msg := inviteLinkError(tc.err)
+		if status != tc.wantStatus || !strings.Contains(msg, tc.wantMsg) {
+			t.Errorf("inviteLinkError(%v) = %d %q, want %d containing %q", tc.err, status, msg, tc.wantStatus, tc.wantMsg)
+		}
+	}
+}
+
 // The real auth wrapper is covered by auth_test.go; an identity wrapper keeps
 // these focused on request validation. A nil client is deliberate: every
 // validation failure must be reported before the client is touched, and once
@@ -267,6 +290,13 @@ func TestGroupEndpointValidation(t *testing.T) {
 		{"settings rejects blank name", http.MethodPost, "/api/group/settings", `{"group_jid":"120363012345678901@g.us","name":"  "}`, http.StatusBadRequest},
 		{"settings rejects bad member_add", http.MethodPost, "/api/group/settings", `{"group_jid":"120363012345678901@g.us","member_add":"nobody"}`, http.StatusBadRequest},
 		{"settings with no client is 503", http.MethodPost, "/api/group/settings", `{"group_jid":"120363012345678901@g.us"}`, http.StatusServiceUnavailable},
+
+		{"invite link rejects GET", http.MethodGet, "/api/group/invite-link", "", http.StatusMethodNotAllowed},
+		{"invite link rejects invalid JSON", http.MethodPost, "/api/group/invite-link", "{", http.StatusBadRequest},
+		{"invite link requires group_jid", http.MethodPost, "/api/group/invite-link", `{"reset":true}`, http.StatusBadRequest},
+		{"invite link rejects user JID", http.MethodPost, "/api/group/invite-link", `{"group_jid":"12025551234@s.whatsapp.net"}`, http.StatusBadRequest},
+		{"invite link with no client is 503", http.MethodPost, "/api/group/invite-link", `{"group_jid":"120363012345678901@g.us"}`, http.StatusServiceUnavailable},
+		{"invite reset with no client is 503", http.MethodPost, "/api/group/invite-link", `{"group_jid":"120363012345678901@g.us","reset":true}`, http.StatusServiceUnavailable},
 
 		{"participants requires group_jid", http.MethodPost, "/api/group/participants", `{"participants":["12025551234"],"action":"add"}`, http.StatusBadRequest},
 		{"participants rejects bad action", http.MethodPost, "/api/group/participants", `{"group_jid":"120363012345678901@g.us","participants":["12025551234"],"action":"kick"}`, http.StatusBadRequest},

@@ -470,6 +470,38 @@ def test_resolve_contacts_merges_lid_and_phone_rows_for_same_person(monkeypatch)
     assert result["matches"][1]["phone"] is None
 
 
+# --- invite links ---------------------------------------------------------
+
+
+def test_get_group_invite_link_reads_by_default_and_resets_on_request(monkeypatch):
+    payload = {"success": True, "link": "https://chat.whatsapp.com/AbC", "code": "AbC"}
+    calls = _capture_post(monkeypatch, payload=payload)
+
+    result = whatsapp.get_group_invite_link(" 120363012345678901@g.us ")
+    whatsapp.get_group_invite_link("120363012345678901@g.us", reset=True)
+
+    assert result["link"] == "https://chat.whatsapp.com/AbC"
+    assert calls[0]["url"].endswith("/group/invite-link")
+    assert calls[0]["json"] == {"group_jid": "120363012345678901@g.us"}
+    assert calls[1]["json"] == {"group_jid": "120363012345678901@g.us", "reset": True}
+
+
+def test_get_group_invite_link_validates_and_surfaces_bridge_errors(monkeypatch):
+    calls = _capture_post(
+        monkeypatch,
+        payload={"success": False, "message": "only group admins can see or reset the invite link"},
+        status_code=403,
+    )
+
+    bad = whatsapp.get_group_invite_link("12025551234@s.whatsapp.net")
+    assert bad["success"] is False and "group_jid" in bad["message"]
+    assert calls == []
+
+    denied = whatsapp.get_group_invite_link("120363012345678901@g.us")
+    assert denied["success"] is False
+    assert "only group admins" in denied["message"]
+
+
 # --- communities ----------------------------------------------------------
 
 
@@ -549,6 +581,9 @@ def test_mcp_tools_delegate_with_keyword_arguments(monkeypatch):
     monkeypatch.setattr(
         mcp_main, "whatsapp_update_community_groups", lambda *a, **k: seen.setdefault("link", (a, k)) or {}
     )
+    monkeypatch.setattr(
+        mcp_main, "whatsapp_get_group_invite_link", lambda *a, **k: seen.setdefault("invite", (a, k)) or {}
+    )
 
     mcp_main.create_group("Trip", ["1"], announce=True, member_add="admins_only")
     mcp_main.update_group_settings("g@g.us", locked=True)
@@ -557,6 +592,7 @@ def test_mcp_tools_delegate_with_keyword_arguments(monkeypatch):
     mcp_main.resolve_contacts(["Harry"], max_matches=2, with_avatars=False)
     mcp_main.list_communities(include_sub_groups=False)
     mcp_main.update_community_groups("100@g.us", ["101@g.us"], "link")
+    mcp_main.get_group_invite_link("100@g.us")
 
     assert seen["create"] == (
         ("Trip", ["1"]),
@@ -585,3 +621,4 @@ def test_mcp_tools_delegate_with_keyword_arguments(monkeypatch):
     assert seen["resolve"] == ((["Harry"],), {"max_matches": 2, "with_avatars": False})
     assert seen["communities"] == ((), {"include_sub_groups": False})
     assert seen["link"] == (("100@g.us", ["101@g.us"], "link"), {})
+    assert seen["invite"] == (("100@g.us",), {"reset": False})

@@ -1492,6 +1492,17 @@ def update_group_participants(group_jid: str, participants: list[str] | str, act
     return _bridge_post("/group/participants", {"group_jid": jid, "participants": members, "action": action})
 
 
+def get_group_invite_link(group_jid: str, reset: bool = False) -> dict[str, Any]:
+    """Read (or, with reset=True, revoke and replace) a group's invite link via POST /api/group/invite-link."""
+    jid = _validate_group_jid(group_jid)
+    if not jid:
+        return _failure("group_jid must be a group JID ending in @g.us")
+    payload: dict[str, Any] = {"group_jid": jid}
+    if reset:
+        payload["reset"] = True
+    return _bridge_post("/group/invite-link", payload)
+
+
 def get_profile_picture(jid: str, preview: bool = True, timeout: float = 15) -> dict[str, Any]:
     """Fetch a profile-picture URL via GET /api/profile-picture.
 

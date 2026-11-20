@@ -86,6 +86,7 @@ def test_send_message_without_token_surfaces_bridge_401(monkeypatch, tmp_path):
         ("create_group", ("Trip", ["12025551234"]), "/group/create"),
         ("update_group_settings", ("120363012345678901@g.us",), "/group/settings"),
         ("update_group_participants", ("120363012345678901@g.us", ["12025551234"], "add"), "/group/participants"),
+        ("get_group_invite_link", ("120363012345678901@g.us",), "/group/invite-link"),
         (
             "update_community_groups",
             ("120363000000000100@g.us", ["120363000000000101@g.us"], "link"),

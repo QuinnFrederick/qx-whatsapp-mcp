@@ -23,6 +23,9 @@ from whatsapp import (
     get_direct_chat_by_contact as whatsapp_get_direct_chat_by_contact,
 )
 from whatsapp import (
+    get_group_invite_link as whatsapp_get_group_invite_link,
+)
+from whatsapp import (
     get_last_interaction as whatsapp_get_last_interaction,
 )
 from whatsapp import (
@@ -634,6 +637,26 @@ def update_group_participants(group_jid: str, participants: list[str], action: s
         and for failures an error code, error_hint and sometimes an add_request invite code.
     """
     return whatsapp_update_group_participants(group_jid, participants, action)
+
+
+@mcp.tool()
+def get_group_invite_link(group_jid: str, reset: bool = False) -> dict[str, Any]:
+    """Get a WhatsApp group's invite link (https://chat.whatsapp.com/...), or reset it.
+
+    Only group admins can see or reset the link. A community's jid returns the community's
+    own invite link.
+
+    Args:
+        group_jid: The group's (or community's) JID, ending in @g.us
+        reset: False (default) only reads the current link. True REVOKES the current link,
+               so nobody can join with it any more, and returns a new one. Only reset when
+               the user explicitly asks for a new link.
+
+    Returns:
+        success, group_jid, link, code (the part after chat.whatsapp.com/) and reset. On
+        failure, message says why (for example that only admins can see the link).
+    """
+    return whatsapp_get_group_invite_link(group_jid, reset=reset)
 
 
 @mcp.tool()

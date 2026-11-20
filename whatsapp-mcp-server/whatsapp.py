@@ -1535,6 +1535,17 @@ def list_communities(include_sub_groups: bool = True, timeout: float = 50) -> di
     return result
 
 
+def create_community(name: str, description: str | None = None) -> dict[str, Any]:
+    """Create a community via POST /api/community/create."""
+    clean_name, err = _validate_group_name(name)
+    if err:
+        return _failure(err.replace("Group name", "Community name"))
+    payload: dict[str, Any] = {"name": clean_name}
+    if description and description.strip():
+        payload["description"] = description.strip()
+    return _bridge_post("/community/create", payload)
+
+
 COMMUNITY_GROUP_ACTIONS = ("link", "unlink")
 
 

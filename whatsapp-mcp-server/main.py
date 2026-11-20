@@ -8,6 +8,9 @@ from mcp.server.fastmcp import FastMCP
 from mcp_config import resolve_host, resolve_port, resolve_transport
 from parent_watchdog import install_stdio_parent_watchdog
 from whatsapp import (
+    create_community as whatsapp_create_community,
+)
+from whatsapp import (
     create_group as whatsapp_create_group,
 )
 from whatsapp import (
@@ -681,6 +684,27 @@ def list_communities(include_sub_groups: bool = True) -> dict[str, Any]:
         groups could be listed; warnings says why for each such community.
     """
     return whatsapp_list_communities(include_sub_groups=include_sub_groups)
+
+
+@mcp.tool()
+def create_community(name: str, description: str | None = None) -> dict[str, Any]:
+    """Create a new WhatsApp Community, with you as its admin.
+
+    WhatsApp creates the community's announcement group automatically (every member is in
+    it and only admins post there). A new community has no other groups and no members
+    yet: add groups with create_group(community_jid=...) or update_community_groups(action=
+    "link"), and invite people with get_group_invite_link on the community's jid.
+
+    Args:
+        name: Community name, up to 100 characters
+        description: Optional text shown on the community's info screen
+
+    Returns:
+        success, community (jid, name, description, is_community, ...), announcement_group
+        (jid and name, or null if it could not be listed yet) and warnings for any follow-up
+        step that failed after the community was created.
+    """
+    return whatsapp_create_community(name, description=description)
 
 
 @mcp.tool()

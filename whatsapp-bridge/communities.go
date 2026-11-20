@@ -28,6 +28,19 @@ type communityGroupsRequest struct {
 	Action       string   `json:"action"` // link | unlink
 }
 
+type communityCreateRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// newCommunityRequest builds the create IQ for a community: a parent group
+// with no participants (members join through its groups or invite link).
+// The server creates the announcement group itself. whatsmeow fills in
+// default_membership_approval_mode="request_required", the only value seen.
+func newCommunityRequest(name string) whatsmeow.ReqCreateGroup {
+	return whatsmeow.ReqCreateGroup{Name: name, GroupParent: types.GroupParent{IsParent: true}}
+}
+
 // parseGroupJIDs parses a list of @g.us JIDs, dropping blanks and duplicates.
 func parseGroupJIDs(raw []string, field string) ([]types.JID, error) {
 	out := make([]types.JID, 0, len(raw))
@@ -211,6 +224,64 @@ func registerCommunityRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth 
 			}
 		}
 		resp := map[string]any{"success": true, "communities": buildCommunities(joined, serverSubGroups, selfJIDs(client))}
+		if len(warn) > 0 {
+			resp["warnings"] = warn
+		}
+		writeJSON(w, http.StatusOK, resp)
+	}))
+
+	// POST /api/community/create {"name", "description"?}
+	mux.HandleFunc("/api/community/create", auth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			jsonErr(w, http.StatusMethodNotAllowed, "POST only")
+			return
+		}
+		var req communityCreateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		req.Name = strings.TrimSpace(req.Name)
+		if err := validateGroupName(req.Name); err != nil {
+			jsonErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !requireClient(w, client) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), groupRequestTimeout)
+		defer cancel()
+		info, err := client.CreateGroup(ctx, newCommunityRequest(req.Name))
+		if err != nil {
+			jsonErr(w, http.StatusBadGateway, "create failed: "+err.Error())
+			return
+		}
+		warn := map[string]string{}
+		// Same settle pause as group create before follow-up IQs to the new JID.
+		sleepCtx(ctx, postCreateSettleDelay)
+		if strings.TrimSpace(req.Description) != "" {
+			desc := req.Description
+			warn = applySettings(ctx, client, info.JID, nil, &desc, nil, nil, nil, nil)
+			if fresh, ferr := fetchGroupInfo(r.Context(), client, info.JID); ferr == nil {
+				info = fresh
+			} else {
+				warn["refresh"] = "community created but re-fetching its info failed: " + ferr.Error()
+			}
+		}
+		resp := map[string]any{"success": true, "community": groupInfoJSON(info), "announcement_group": nil}
+		// Best effort and inside the request budget, so create + info fetch +
+		// this lookup stay under the server's 60s WriteTimeout.
+		subCtx, subCancel := context.WithTimeout(ctx, groupInfoTimeout)
+		defer subCancel()
+		if targets, serr := client.GetSubGroups(subCtx, info.JID); serr != nil {
+			warn["announcement_group"] = "community created but listing its groups failed: " + serr.Error()
+		} else {
+			for _, t := range targets {
+				if t.IsDefaultSubGroup {
+					resp["announcement_group"] = map[string]any{"jid": t.JID.String(), "name": t.Name}
+				}
+			}
+		}
 		if len(warn) > 0 {
 			resp["warnings"] = warn
 		}

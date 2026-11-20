@@ -530,6 +530,31 @@ def test_list_communities_reports_old_bridge_and_keeps_shape(monkeypatch):
     assert result["communities"] == []
 
 
+def test_create_community_posts_name_and_optional_description(monkeypatch):
+    calls = _capture_post(monkeypatch, payload={"success": True, "community": {"jid": "100@g.us"}})
+
+    result = whatsapp.create_community("  Forest  ", description="  Woods ")
+    whatsapp.create_community("Forest", description="   ")
+
+    assert result["community"]["jid"] == "100@g.us"
+    assert calls[0]["url"].endswith("/community/create")
+    assert calls[0]["json"] == {"name": "Forest", "description": "Woods"}
+    assert calls[1]["json"] == {"name": "Forest"}
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"), [("  ", "Community name must be provided"), ("x" * 101, "100 characters")]
+)
+def test_create_community_validates_name(monkeypatch, name, expected):
+    calls = _capture_post(monkeypatch, payload={"success": True})
+
+    result = whatsapp.create_community(name)
+
+    assert result["success"] is False
+    assert expected in result["message"]
+    assert calls == []
+
+
 def test_update_community_groups_posts_normalized_action(monkeypatch):
     calls = _capture_post(monkeypatch, payload={"success": True, "results": []})
 
@@ -584,6 +609,9 @@ def test_mcp_tools_delegate_with_keyword_arguments(monkeypatch):
     monkeypatch.setattr(
         mcp_main, "whatsapp_get_group_invite_link", lambda *a, **k: seen.setdefault("invite", (a, k)) or {}
     )
+    monkeypatch.setattr(
+        mcp_main, "whatsapp_create_community", lambda *a, **k: seen.setdefault("community", (a, k)) or {}
+    )
 
     mcp_main.create_group("Trip", ["1"], announce=True, member_add="admins_only")
     mcp_main.update_group_settings("g@g.us", locked=True)
@@ -593,6 +621,7 @@ def test_mcp_tools_delegate_with_keyword_arguments(monkeypatch):
     mcp_main.list_communities(include_sub_groups=False)
     mcp_main.update_community_groups("100@g.us", ["101@g.us"], "link")
     mcp_main.get_group_invite_link("100@g.us")
+    mcp_main.create_community("Forest")
 
     assert seen["create"] == (
         ("Trip", ["1"]),
@@ -622,3 +651,4 @@ def test_mcp_tools_delegate_with_keyword_arguments(monkeypatch):
     assert seen["communities"] == ((), {"include_sub_groups": False})
     assert seen["link"] == (("100@g.us", ["101@g.us"], "link"), {})
     assert seen["invite"] == (("100@g.us",), {"reset": False})
+    assert seen["community"] == (("Forest",), {"description": None})

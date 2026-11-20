@@ -24,6 +24,7 @@ any ambiguous names (showing `avatar_url` thumbnails) → `create_group` with th
 | `update_group_participants(group_jid, participants, action)` | `action` is `add`, `remove`, `promote` or `demote`; per-participant `ok` flags in `results`. |
 | `get_group_invite_link(group_jid, reset=False)` | The group's (or community's) `https://chat.whatsapp.com/…` link and `code`. `reset=True` revokes the current link and returns a new one. Admins only. |
 | `list_communities(include_sub_groups=True)` | Communities you belong to, each with `announcement_group` and `sub_groups` (`jid`, `name`, `is_announcement_group`, `joined`). The full group list (including groups you have not joined) comes from WhatsApp; if that query fails for a community, only your own groups are listed and `sub_groups_source` is `joined_only`. |
+| `create_community(name, description=None)` | Creates a community with you as admin. WhatsApp adds its announcement group automatically (returned as `announcement_group`); add groups with `create_group(community_jid=…)` or `update_community_groups`. |
 | `update_community_groups(community_jid, group_jids, action)` | `action` is `link` (move existing groups into the community) or `unlink` (make them standalone again); per-group `ok` flags in `results`. Needs admin rights on the community and each group; the announcement group cannot be unlinked. |
 
 Participants may be given as JIDs (`…@s.whatsapp.net`, `…@lid`) or as phone numbers with
@@ -103,6 +104,19 @@ Response: `{"success": true, "communities": [{"jid", "name", "description", "you
 `sub_groups=1` (default) one more per community fetches its full group list.
 `you_are_admin` is `null` when WhatsApp did not include you in the community's participant
 list.
+
+### `POST /api/community/create`
+
+```json
+{"name": "Forest", "description": "Optional"}
+```
+
+Response: `{"success": true, "community": {…group object, "is_community": true…},
+"announcement_group": {"jid", "name"} | null, "warnings"?: {…}}`. The create IQ carries
+`<parent default_membership_approval_mode="request_required"/>` and no participants; the
+server creates the announcement group. After the settle delay the description (if any) is
+applied and the new community's groups are listed to find the announcement group. Failures
+after the create show up in `warnings`.
 
 ### `POST /api/community/groups`
 

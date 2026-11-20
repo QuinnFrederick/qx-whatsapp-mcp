@@ -128,6 +128,11 @@ func TestCommunityEndpointValidation(t *testing.T) {
 		wantStatus int
 	}{
 		{"list rejects POST", http.MethodPost, "/api/communities", "{}", http.StatusMethodNotAllowed},
+		{"create rejects GET", http.MethodGet, "/api/community/create", "", http.StatusMethodNotAllowed},
+		{"create rejects invalid JSON", http.MethodPost, "/api/community/create", "{", http.StatusBadRequest},
+		{"create requires name", http.MethodPost, "/api/community/create", `{"name":"  ","description":"x"}`, http.StatusBadRequest},
+		{"create rejects long name", http.MethodPost, "/api/community/create", `{"name":"` + strings.Repeat("x", maxGroupNameRunes+1) + `"}`, http.StatusBadRequest},
+		{"create with no client is 503", http.MethodPost, "/api/community/create", `{"name":"Forest"}`, http.StatusServiceUnavailable},
 		{"list with no client is 503", http.MethodGet, "/api/communities", "", http.StatusServiceUnavailable},
 		{"list without sub-groups with no client is 503", http.MethodGet, "/api/communities?sub_groups=0", "", http.StatusServiceUnavailable},
 
@@ -173,5 +178,15 @@ func TestParseGroupJIDs(t *testing.T) {
 	}
 	if _, err := parseGroupJIDs(nil, "group_jids"); err == nil {
 		t.Error("empty list should fail")
+	}
+}
+
+func TestNewCommunityRequest(t *testing.T) {
+	req := newCommunityRequest("Forest")
+	if req.Name != "Forest" || !req.IsParent {
+		t.Fatalf("request = %+v, want a parent named Forest", req)
+	}
+	if len(req.Participants) != 0 || !req.LinkedParentJID.IsEmpty() {
+		t.Errorf("a community is created without participants or a parent: %+v", req)
 	}
 }

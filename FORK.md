@@ -24,7 +24,7 @@ any ambiguous names (showing `avatar_url` thumbnails) → `create_group` with th
 | `update_group_participants(group_jid, participants, action)` | `action` is `add`, `remove`, `promote` or `demote`; per-participant `ok` flags in `results`. |
 
 Participants may be given as JIDs (`…@s.whatsapp.net`, `…@lid`) or as phone numbers with
-country code in any formatting (`+1 (202) 555-1234`). Group names are limited to 25
+country code in any formatting (`+1 (202) 555-1234`). Group names are limited to 100
 characters by WhatsApp.
 
 ## Bridge REST endpoints

@@ -539,7 +539,7 @@ def create_group(
     listed in failed_participants with an invite code, and the group is still created.
 
     Args:
-        name: Group subject, up to 25 characters
+        name: Group subject, up to 100 characters
         participants: People to add, as JIDs ("12025551234@s.whatsapp.net", "...@lid") or
                       phone numbers with country code. At least one is required.
         description: Optional text shown in the group's info screen
@@ -584,7 +584,7 @@ def update_group_settings(
 
     Args:
         group_jid: The group's JID, ending in @g.us
-        name: New group subject, up to 25 characters
+        name: New group subject, up to 100 characters
         description: New description. Pass an empty string to clear it.
         announce: True means only admins can post ("announcement group"); False lets everyone post
         locked: True means only admins can edit the group name, picture and description

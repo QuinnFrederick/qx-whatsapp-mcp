@@ -1304,7 +1304,9 @@ def download_media(message_id: str, chat_jid: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 GROUP_PARTICIPANT_ACTIONS = ("add", "remove", "promote", "demote")
-MAX_GROUP_NAME_LENGTH = 25
+# WhatsApp's group subject limit in characters (raised from 25 to 100 in 2023).
+# Mirrors maxGroupNameRunes in whatsapp-bridge/groups.go.
+MAX_GROUP_NAME_LENGTH = 100
 _MEMBER_ADD_ALIASES = {
     "all_members": "all_members",
     "all": "all_members",

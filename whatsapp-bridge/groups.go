@@ -26,9 +26,13 @@ import (
 )
 
 const (
-	// maxGroupNameRunes mirrors whatsmeow's note on ReqCreateGroup: the server
-	// rejects longer subjects with a 406, so fail fast with a useful message.
-	maxGroupNameRunes = 25
+	// maxGroupNameRunes is WhatsApp's group subject limit, counted in
+	// characters (code points), not bytes. WhatsApp raised it from 25 to 100 in
+	// 2023; whatsmeow's ReqCreateGroup comment still says 25. The server rejects
+	// an over-long subject (406 not-acceptable), so fail fast with a useful
+	// message instead. (The Business Cloud API allows 128; that limit does not
+	// apply to a linked consumer device like this bridge.)
+	maxGroupNameRunes = 100
 	// postCreateSettleDelay is the pause between a successful create and any
 	// follow-up IQs (description, member-add mode) sent to the new group JID.
 	// Immediately after the create response the server has been seen to

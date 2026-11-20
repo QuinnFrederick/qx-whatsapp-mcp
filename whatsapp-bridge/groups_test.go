@@ -151,6 +151,29 @@ func TestGroupInfoJSONExposesDescriptionID(t *testing.T) {
 	}
 }
 
+func TestValidateGroupNameCountsCharactersUpTo100(t *testing.T) {
+	if maxGroupNameRunes != 100 {
+		t.Fatalf("maxGroupNameRunes = %d, want 100 (WhatsApp's subject limit)", maxGroupNameRunes)
+	}
+	cases := []struct {
+		name    string
+		in      string
+		wantErr bool
+	}{
+		{"empty", "", true},
+		{"26 chars, over the old 25 cap", strings.Repeat("x", 26), false},
+		{"100 multibyte chars (200 bytes)", strings.Repeat("é", 100), false},
+		{"101 chars", strings.Repeat("x", 101), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateGroupName(tc.in); (err != nil) != tc.wantErr {
+				t.Fatalf("validateGroupName(%d runes) err = %v, wantErr %v", len([]rune(tc.in)), err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // The real auth wrapper is covered by auth_test.go; an identity wrapper keeps
 // these focused on request validation. A nil client is deliberate: every
 // validation failure must be reported before the client is touched, and once

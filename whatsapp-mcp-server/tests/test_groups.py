@@ -86,7 +86,7 @@ def test_create_group_omits_unset_settings_and_accepts_single_participant_string
     ("name", "participants", "member_add", "expected"),
     [
         ("", ["12025551234"], None, "name"),
-        ("x" * 26, ["12025551234"], None, "25 characters"),
+        ("x" * 101, ["12025551234"], None, "100 characters"),
         ("Trip", [], None, "participant"),
         ("Trip", ["  "], None, "participant"),
         ("Trip", ["12025551234"], "friends", "member_add"),
@@ -100,6 +100,19 @@ def test_create_group_validates_before_calling_bridge(monkeypatch, name, partici
     assert result["success"] is False
     assert expected in result["message"]
     assert calls == []
+
+
+def test_group_name_limit_is_100_characters_not_bytes(monkeypatch):
+    calls = _capture_post(monkeypatch, payload={"success": True})
+    # 100 characters but 200 UTF-8 bytes; 26 characters was rejected under the old 25 cap.
+    names = ["é" * 100, "x" * 26]
+
+    for name in names:
+        whatsapp.create_group(name, ["12025551234"])
+        whatsapp.update_group_settings("120363012345678901@g.us", name=name)
+
+    assert whatsapp.MAX_GROUP_NAME_LENGTH == 100
+    assert [c["json"]["name"] for c in calls] == [n for n in names for _ in range(2)]
 
 
 def test_create_group_surfaces_bridge_error_json(monkeypatch):
@@ -167,7 +180,7 @@ def test_update_group_settings_with_no_changes_still_calls_bridge(monkeypatch):
         ("12025551234@s.whatsapp.net", {}, "@g.us"),
         ("", {}, "@g.us"),
         ("120363012345678901@g.us", {"name": "   "}, "name"),
-        ("120363012345678901@g.us", {"name": "x" * 26}, "25 characters"),
+        ("120363012345678901@g.us", {"name": "x" * 101}, "100 characters"),
         ("120363012345678901@g.us", {"member_add": "nobody"}, "member_add"),
     ],
 )

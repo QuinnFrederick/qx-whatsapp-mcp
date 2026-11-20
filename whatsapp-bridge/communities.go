@@ -41,6 +41,38 @@ func newCommunityRequest(name string) whatsmeow.ReqCreateGroup {
 	return whatsmeow.ReqCreateGroup{Name: name, GroupParent: types.GroupParent{IsParent: true}}
 }
 
+// lidResolver is the part of whatsmeow's LID store used to fill in the other
+// identity of a member (phone for a LID, LID for a phone).
+type lidResolver interface {
+	GetPNForLID(ctx context.Context, lid types.JID) (types.JID, error)
+	GetLIDForPN(ctx context.Context, pn types.JID) (types.JID, error)
+}
+
+// communityMembersJSON describes each member with both identities where the
+// local LID map knows them, in the same shape as a group participant.
+// Lookup failures just leave the field null.
+func communityMembersJSON(ctx context.Context, members []types.JID, lids lidResolver) []map[string]any {
+	out := make([]map[string]any, 0, len(members))
+	for _, m := range members {
+		m = m.ToNonAD()
+		var pn, lid types.JID
+		switch m.Server {
+		case types.DefaultUserServer:
+			pn = m
+			if lids != nil {
+				lid, _ = lids.GetLIDForPN(ctx, m)
+			}
+		case types.HiddenUserServer:
+			lid = m
+			if lids != nil {
+				pn, _ = lids.GetPNForLID(ctx, m)
+			}
+		}
+		out = append(out, map[string]any{"jid": m.String(), "phone": optionalUser(pn), "lid": optionalUser(lid)})
+	}
+	return out
+}
+
 // parseGroupJIDs parses a list of @g.us JIDs, dropping blanks and duplicates.
 func parseGroupJIDs(raw []string, field string) ([]types.JID, error) {
 	out := make([]types.JID, 0, len(raw))
@@ -228,6 +260,39 @@ func registerCommunityRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth 
 			resp["warnings"] = warn
 		}
 		writeJSON(w, http.StatusOK, resp)
+	}))
+
+	// GET /api/community/participants?community_jid=...
+	//
+	// Everyone in the community's groups (linked_groups_participants IQ), one
+	// entry per account.
+	mux.HandleFunc("/api/community/participants", auth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			jsonErr(w, http.StatusMethodNotAllowed, "GET only")
+			return
+		}
+		community, err := parseGroupJID(r.URL.Query().Get("community_jid"), "community_jid")
+		if err != nil {
+			jsonErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !requireClient(w, client) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), groupRequestTimeout)
+		defer cancel()
+		members, err := client.GetLinkedGroupsParticipants(ctx, community)
+		if err != nil {
+			jsonErr(w, http.StatusBadGateway, "listing community members failed: "+err.Error())
+			return
+		}
+		parts := communityMembersJSON(ctx, members, client.Store.LIDs)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success":       true,
+			"community_jid": community.String(),
+			"count":         len(parts),
+			"participants":  parts,
+		})
 	}))
 
 	// POST /api/community/create {"name", "description"?}

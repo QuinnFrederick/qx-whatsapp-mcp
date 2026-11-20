@@ -47,6 +47,9 @@ from whatsapp import (
     list_communities as whatsapp_list_communities,
 )
 from whatsapp import (
+    list_community_participants as whatsapp_list_community_participants,
+)
+from whatsapp import (
     list_messages as whatsapp_list_messages,
 )
 from whatsapp import (
@@ -684,6 +687,22 @@ def list_communities(include_sub_groups: bool = True) -> dict[str, Any]:
         groups could be listed; warnings says why for each such community.
     """
     return whatsapp_list_communities(include_sub_groups=include_sub_groups)
+
+
+@mcp.tool()
+def list_community_participants(community_jid: str, with_names: bool = True) -> dict[str, Any]:
+    """List the members of a WhatsApp Community: everyone in any of its groups, once each.
+
+    Args:
+        community_jid: The community's JID from list_communities, ending in @g.us
+        with_names: True (default) adds each member's contact name from your address book or
+            WhatsApp profile when known (null otherwise)
+
+    Returns:
+        success, community_jid, count and participants, each with jid, phone (null when
+        WhatsApp only shares an anonymous @lid id and it cannot be mapped), lid and name.
+    """
+    return whatsapp_list_community_participants(community_jid, with_names=with_names)
 
 
 @mcp.tool()

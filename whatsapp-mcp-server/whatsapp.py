@@ -1535,6 +1535,33 @@ def list_communities(include_sub_groups: bool = True, timeout: float = 50) -> di
     return result
 
 
+def list_community_participants(community_jid: str, with_names: bool = True, timeout: float = 50) -> dict[str, Any]:
+    """List everyone in a community's groups via GET /api/community/participants.
+
+    With ``with_names`` each member gets a ``name`` from the local contact store
+    (whatsapp.db), resolved by phone first and then by JID; null when unknown.
+    """
+    community = _validate_group_jid(community_jid)
+    if not community:
+        return {**_failure("community_jid must be a community JID ending in @g.us"), "participants": []}
+    result = _bridge_get("/community/participants", {"community_jid": community}, timeout)
+    participants = result.get("participants")
+    if not isinstance(participants, list):
+        participants = []
+    if with_names:
+        for member in participants:
+            if not isinstance(member, dict):
+                continue
+            name = None
+            if member.get("phone"):
+                name = _resolve_name_from_whatsmeow(f"{member['phone']}@s.whatsapp.net")
+            if not name and member.get("jid"):
+                name = _resolve_name_from_whatsmeow(member["jid"])
+            member["name"] = name
+    result["participants"] = participants
+    return result
+
+
 def create_community(name: str, description: str | None = None) -> dict[str, Any]:
     """Create a community via POST /api/community/create."""
     clean_name, err = _validate_group_name(name)

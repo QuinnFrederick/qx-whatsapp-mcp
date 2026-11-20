@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -128,6 +130,10 @@ func TestCommunityEndpointValidation(t *testing.T) {
 		wantStatus int
 	}{
 		{"list rejects POST", http.MethodPost, "/api/communities", "{}", http.StatusMethodNotAllowed},
+		{"participants rejects POST", http.MethodPost, "/api/community/participants?community_jid=1@g.us", "{}", http.StatusMethodNotAllowed},
+		{"participants requires community", http.MethodGet, "/api/community/participants", "", http.StatusBadRequest},
+		{"participants rejects user JID", http.MethodGet, "/api/community/participants?community_jid=1@s.whatsapp.net", "", http.StatusBadRequest},
+		{"participants with no client is 503", http.MethodGet, "/api/community/participants?community_jid=1@g.us", "", http.StatusServiceUnavailable},
 		{"create rejects GET", http.MethodGet, "/api/community/create", "", http.StatusMethodNotAllowed},
 		{"create rejects invalid JSON", http.MethodPost, "/api/community/create", "{", http.StatusBadRequest},
 		{"create requires name", http.MethodPost, "/api/community/create", `{"name":"  ","description":"x"}`, http.StatusBadRequest},
@@ -188,5 +194,52 @@ func TestNewCommunityRequest(t *testing.T) {
 	}
 	if len(req.Participants) != 0 || !req.LinkedParentJID.IsEmpty() {
 		t.Errorf("a community is created without participants or a parent: %+v", req)
+	}
+}
+
+type fakeLIDs map[types.JID]types.JID
+
+func (f fakeLIDs) GetPNForLID(_ context.Context, lid types.JID) (types.JID, error) {
+	if pn, ok := f[lid]; ok {
+		return pn, nil
+	}
+	return types.JID{}, errors.New("unknown")
+}
+
+func (f fakeLIDs) GetLIDForPN(_ context.Context, pn types.JID) (types.JID, error) {
+	for lid, p := range f {
+		if p == pn {
+			return lid, nil
+		}
+	}
+	return types.JID{}, nil // whatsmeow returns an empty JID when unmapped
+}
+
+func TestCommunityMembersJSON(t *testing.T) {
+	pn := types.NewJID("15550000001", types.DefaultUserServer)
+	lid := types.NewJID("99000001", types.HiddenUserServer)
+	strangerLID := types.NewJID("99000002", types.HiddenUserServer)
+	device := types.JID{User: "15550000003", Device: 4, Server: types.DefaultUserServer}
+	lids := fakeLIDs{lid: pn}
+
+	got := communityMembersJSON(context.Background(), []types.JID{lid, pn, strangerLID, device}, lids)
+	want := []map[string]any{
+		{"jid": "99000001@lid", "phone": "15550000001", "lid": "99000001"},
+		{"jid": "15550000001@s.whatsapp.net", "phone": "15550000001", "lid": "99000001"},
+		{"jid": "99000002@lid", "phone": nil, "lid": "99000002"},
+		{"jid": "15550000003@s.whatsapp.net", "phone": "15550000003", "lid": nil},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d members, want %d", len(got), len(want))
+	}
+	for i := range want {
+		for k, v := range want[i] {
+			if got[i][k] != v {
+				t.Errorf("member %d %s = %v, want %v", i, k, got[i][k], v)
+			}
+		}
+	}
+	if none := communityMembersJSON(context.Background(), []types.JID{lid}, nil); none[0]["phone"] != nil {
+		t.Errorf("nil resolver should leave phone null, got %v", none[0])
 	}
 }

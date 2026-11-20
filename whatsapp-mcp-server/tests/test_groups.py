@@ -530,6 +530,51 @@ def test_list_communities_reports_old_bridge_and_keeps_shape(monkeypatch):
     assert result["communities"] == []
 
 
+def test_list_community_participants_gets_and_adds_names(monkeypatch):
+    monkeypatch.setenv("WHATSAPP_BRIDGE_TOKEN", "tok")
+    members = [
+        {"jid": "99000001@lid", "phone": "15550000001", "lid": "99000001"},
+        {"jid": "99000002@lid", "phone": None, "lid": "99000002"},
+        {"jid": "15550000003@s.whatsapp.net", "phone": "15550000003", "lid": None},
+    ]
+    calls = _capture_get(monkeypatch, payload={"success": True, "count": 3, "participants": members})
+    names = {"15550000001@s.whatsapp.net": "Harry", "99000002@lid": "Sam"}
+    looked_up = []
+
+    def fake_name(jid):
+        looked_up.append(jid)
+        return names.get(jid)
+
+    monkeypatch.setattr(whatsapp, "_resolve_name_from_whatsmeow", fake_name)
+
+    result = whatsapp.list_community_participants(" 100@g.us ")
+
+    assert calls[0]["url"].endswith("/community/participants")
+    assert calls[0]["params"] == {"community_jid": "100@g.us"}
+    assert calls[0]["headers"] == {"Authorization": "Bearer tok"}
+    assert [m["name"] for m in result["participants"]] == ["Harry", "Sam", None]
+    # Phone first, then the JID itself when the phone gives nothing.
+    assert looked_up == [
+        "15550000001@s.whatsapp.net",
+        "99000002@lid",
+        "15550000003@s.whatsapp.net",
+        "15550000003@s.whatsapp.net",
+    ]
+
+
+def test_list_community_participants_validates_and_tolerates_errors(monkeypatch):
+    calls = _capture_get(monkeypatch, payload=None, status_code=502, text="bad gateway")
+    monkeypatch.setattr(whatsapp, "_resolve_name_from_whatsmeow", lambda jid: None)
+
+    bad = whatsapp.list_community_participants("12025551234@s.whatsapp.net")
+    assert bad["success"] is False and "community_jid" in bad["message"] and bad["participants"] == []
+    assert calls == []
+
+    failed = whatsapp.list_community_participants("100@g.us", with_names=False)
+    assert failed["success"] is False
+    assert failed["participants"] == []
+
+
 def test_create_community_posts_name_and_optional_description(monkeypatch):
     calls = _capture_post(monkeypatch, payload={"success": True, "community": {"jid": "100@g.us"}})
 
@@ -612,6 +657,9 @@ def test_mcp_tools_delegate_with_keyword_arguments(monkeypatch):
     monkeypatch.setattr(
         mcp_main, "whatsapp_create_community", lambda *a, **k: seen.setdefault("community", (a, k)) or {}
     )
+    monkeypatch.setattr(
+        mcp_main, "whatsapp_list_community_participants", lambda *a, **k: seen.setdefault("members", (a, k)) or {}
+    )
 
     mcp_main.create_group("Trip", ["1"], announce=True, member_add="admins_only")
     mcp_main.update_group_settings("g@g.us", locked=True)
@@ -622,6 +670,7 @@ def test_mcp_tools_delegate_with_keyword_arguments(monkeypatch):
     mcp_main.update_community_groups("100@g.us", ["101@g.us"], "link")
     mcp_main.get_group_invite_link("100@g.us")
     mcp_main.create_community("Forest")
+    mcp_main.list_community_participants("100@g.us", with_names=False)
 
     assert seen["create"] == (
         ("Trip", ["1"]),
@@ -652,3 +701,4 @@ def test_mcp_tools_delegate_with_keyword_arguments(monkeypatch):
     assert seen["link"] == (("100@g.us", ["101@g.us"], "link"), {})
     assert seen["invite"] == (("100@g.us",), {"reset": False})
     assert seen["community"] == (("Forest",), {"description": None})
+    assert seen["members"] == (("100@g.us",), {"with_names": False})

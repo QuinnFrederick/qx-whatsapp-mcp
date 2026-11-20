@@ -263,7 +263,7 @@ func TestInviteLinkError(t *testing.T) {
 func TestGroupEndpointValidation(t *testing.T) {
 	identity := func(h http.HandlerFunc) http.HandlerFunc { return h }
 	mux := http.NewServeMux()
-	registerGroupRoutes(mux, nil, identity)
+	registerGroupRoutes(mux, nil, identity, nil)
 
 	longName := strings.Repeat("x", maxGroupNameRunes+1)
 	cases := []struct {

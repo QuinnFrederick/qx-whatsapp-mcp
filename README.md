@@ -395,6 +395,8 @@ This fork adds group management, WhatsApp Communities and profile pictures:
 `resolve_contacts` (turn spoken names into contacts and flag ambiguous ones, with avatar
 thumbnails), `get_profile_picture`, `create_group` (optionally inside a community),
 `update_group_settings`, `update_group_participants`, `get_group_invite_link`,
+`set_group_picture` (set or remove a group's or community's picture from a URL, a local
+file or base64; any JPEG, PNG or WebP is cropped and converted for you),
 `list_communities`, `list_community_participants`, `create_community` and
 `update_community_groups`. Tool parameters, the bridge endpoints behind them
 (`/api/group/*`, `/api/community/*`, `/api/communities`, `/api/profile-picture`), their JSON
@@ -569,7 +571,8 @@ to the matching value.
 
 Outbound `media_path` values are confined to `WHATSAPP_MEDIA_ROOTS`. The default
 outbox is `~/.local/share/whatsapp-mcp/outbox`, created on bridge startup. Move
-files there before calling `send_file` or `send_audio_message`, or set
+files there before calling `send_file`, `send_audio_message` or
+`set_group_picture(image_path=...)`, or set
 `WHATSAPP_MEDIA_ROOTS` to a colon-separated list of absolute directories.
 
 ### Run automatically on macOS

@@ -130,7 +130,7 @@ func TestGroupInfoJSONCommunityFields(t *testing.T) {
 func TestCommunityEndpointValidation(t *testing.T) {
 	identity := func(h http.HandlerFunc) http.HandlerFunc { return h }
 	mux := http.NewServeMux()
-	registerGroupRoutes(mux, nil, identity)
+	registerGroupRoutes(mux, nil, identity, nil)
 
 	cases := []struct {
 		name       string

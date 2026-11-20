@@ -393,7 +393,9 @@ func fetchGroupInfo(parent context.Context, client *whatsmeow.Client, jid types.
 	return client.GetGroupInfo(ctx, jid)
 }
 
-func registerGroupRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth func(http.HandlerFunc) http.HandlerFunc) {
+// mediaRoots is the outbound media allow-list (media_path.go); the picture
+// route reads image_path files only from inside it.
+func registerGroupRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth func(http.HandlerFunc) http.HandlerFunc, mediaRoots []string) {
 	// POST /api/group/create
 	mux.HandleFunc("/api/group/create", auth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -654,7 +656,8 @@ func registerGroupRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth func
 
 	// GET /api/profile-picture?jid=...&preview=1
 	//
-	// Works for contacts (phone, @s.whatsapp.net, @lid) and groups (@g.us).
+	// Works for contacts (phone, @s.whatsapp.net, @lid), groups and
+	// communities (@g.us).
 	// "No picture" and "hidden from you" are normal outcomes for an avatar
 	// lookup, so they return 200 with url: null and a reason rather than 502.
 	mux.HandleFunc("/api/profile-picture", auth(func(w http.ResponseWriter, r *http.Request) {
@@ -680,6 +683,16 @@ func registerGroupRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth func
 		preview := r.URL.Query().Get("preview")
 		params := &whatsmeow.GetProfilePictureParams{Preview: preview == "1" || strings.EqualFold(preview, "true")}
 		pic, err := client.GetProfilePictureInfo(ctx, jid, params)
+		if communityPictureFallback(jid, err) {
+			// Possibly a community the account is not in the parent group of:
+			// retry with whatsmeow's community query. Keep the first answer
+			// ("hidden") unless the retry gives a definite one.
+			community := *params
+			community.IsCommunity = true
+			if cpic, cerr := client.GetProfilePictureInfo(ctx, jid, &community); cerr == nil || errors.Is(cerr, whatsmeow.ErrProfilePictureNotSet) {
+				pic, err = cpic, cerr
+			}
+		}
 		resp := map[string]any{"success": true, "jid": jid.String(), "url": nil}
 		switch {
 		case errors.Is(err, whatsmeow.ErrProfilePictureNotSet):
@@ -699,5 +712,6 @@ func registerGroupRoutes(mux *http.ServeMux, client *whatsmeow.Client, auth func
 		writeJSON(w, http.StatusOK, resp)
 	}))
 
+	registerGroupPictureRoute(mux, client, auth, mediaRoots, newPictureHTTPClient())
 	registerCommunityRoutes(mux, client, auth)
 }

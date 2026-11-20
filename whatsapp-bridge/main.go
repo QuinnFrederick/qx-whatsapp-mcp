@@ -2275,7 +2275,7 @@ func newRESTMux(client *whatsmeow.Client, messageStore *MessageStore, port int, 
 	registerHistoryEndpoint(mux, auth, client, messageStore)
 
 	// Group management + profile pictures (fork addition, see groups.go)
-	registerGroupRoutes(mux, client, auth)
+	registerGroupRoutes(mux, client, auth, allowedMediaRoots)
 
 	// Health check endpoint
 	mux.HandleFunc("/api/health", auth(func(w http.ResponseWriter, r *http.Request) {

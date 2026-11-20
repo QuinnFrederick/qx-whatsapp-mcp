@@ -77,6 +77,9 @@ from whatsapp import (
     send_reaction as whatsapp_send_reaction,
 )
 from whatsapp import (
+    set_group_picture as whatsapp_set_group_picture,
+)
+from whatsapp import (
     update_community_groups as whatsapp_update_community_groups,
 )
 from whatsapp import (
@@ -526,7 +529,7 @@ def get_profile_picture(jid: str, preview: bool = True) -> dict[str, Any]:
 
     Args:
         jid: Contact JID ("12025551234@s.whatsapp.net" or "...@lid"), a phone number with
-             country code, or a group JID ending in @g.us
+             country code, or a group or community JID ending in @g.us
         preview: True (default) returns a small thumbnail; False returns the full-size image
 
     Returns:
@@ -663,6 +666,59 @@ def get_group_invite_link(group_jid: str, reset: bool = False) -> dict[str, Any]
         failure, message says why (for example that only admins can see the link).
     """
     return whatsapp_get_group_invite_link(group_jid, reset=reset)
+
+
+@mcp.tool()
+def set_group_picture(
+    group_jid: str,
+    image_url: str | None = None,
+    image_path: str | None = None,
+    image_base64: str | None = None,
+    remove: bool = False,
+) -> dict[str, Any]:
+    """Set or remove the picture of a WhatsApp group, or of a community itself.
+
+    Give exactly ONE image source: image_url, image_path or image_base64. Or pass
+    remove=True with no image to clear the current picture. Only change a picture when the
+    user asks you to.
+
+    Any JPEG, PNG or WebP up to 10 MB works as it is: it is turned upright, centre-cropped
+    to a square, resized to 640x640 and converted to JPEG automatically, so do not crop,
+    resize or convert it first. A non-square image loses its edges on the long side.
+
+    For a community's own picture, pass the community's jid from list_communities. Each
+    group inside a community has its own picture; pass that group's jid to change it.
+
+    Who may do this: community admins for a community's picture. For a group, its admins;
+    if the group lets all members edit its info (locked=False in update_group_settings),
+    any member.
+
+    Args:
+        group_jid: The group's or community's JID, ending in @g.us
+        image_url: A public https:// link straight to a JPEG, PNG or WebP image (not a web
+            page). The bridge downloads it; links to local or private network addresses
+            are refused.
+        image_path: Absolute path to an image file on the computer running the WhatsApp
+            bridge, inside its allowed media folders (WHATSAPP_MEDIA_ROOTS, by default
+            ~/.local/share/whatsapp-mcp/outbox)
+        image_base64: The image file's bytes, base64-encoded. A data: URL
+            ("data:image/png;base64,...") is fine too.
+        remove: True removes the current picture. Give no image source with it.
+
+    Returns:
+        success, group_jid, is_community (null if it could not be checked), removed, and
+        picture_id (WhatsApp's id for the new picture; null after a removal). When an image
+        was set, image gives source, format, original_width, original_height, width,
+        height and bytes. On failure, message says why (for example that only admins can
+        change the picture, or that the image could not be downloaded).
+    """
+    return whatsapp_set_group_picture(
+        group_jid,
+        image_url=image_url,
+        image_path=image_path,
+        image_base64=image_base64,
+        remove=remove,
+    )
 
 
 @mcp.tool()

@@ -6,7 +6,8 @@ lives in new files so the diff against upstream stays small:
 
 | Component | File | Upstream touch |
 |---|---|---|
-| Bridge endpoints | `whatsapp-bridge/groups.go`, `communities.go` (+ `_test.go`) | one `registerGroupRoutes(...)` line in `main.go` (it registers the community routes too) |
+| Bridge endpoints | `whatsapp-bridge/groups.go`, `communities.go`, `group_picture.go` (+ `_test.go`, `testdata/`) | one `registerGroupRoutes(...)` line in `main.go` (it registers the community and picture routes too, and passes the media roots) |
+| Bridge dependency | `golang.org/x/image` (Go team) | WebP decoding and image scaling for group pictures; v0.45.0 is the newest that builds with Go 1.25 |
 | MCP tools | `whatsapp-mcp-server/main.py`, `whatsapp.py` (appended section) | tool definitions and bridge client functions |
 | Tests | `whatsapp-mcp-server/tests/test_groups.py` | + three rows in `test_bridge_auth.py` |
 
@@ -18,11 +19,12 @@ any ambiguous names (showing `avatar_url` thumbnails) → `create_group` with th
 | Tool | What it does |
 |---|---|
 | `resolve_contacts(names, max_matches=5, with_avatars=True)` | For each name returns `status` (`unique` / `ambiguous` / `none`), `matches` (jid, name, phone, avatar_url) and `total_matches`. Avatars are fetched only for ambiguous names and failures leave `avatar_url` null. |
-| `get_profile_picture(jid, preview=True)` | Short-lived CDN URL of a contact's or group's picture. `url` is null (with a `reason`) when there is no picture or it is hidden from you. |
+| `get_profile_picture(jid, preview=True)` | Short-lived CDN URL of a contact's, group's or community's picture. `url` is null (with a `reason`) when there is no picture or it is hidden from you. |
 | `create_group(name, participants, description=None, announce=None, locked=None, member_add=None, join_approval=None, community_jid=None)` | Creates a group. `announce=True` → only admins can post. `locked=True` → only admins edit group info. `member_add` is `"all_members"` or `"admins_only"`. `join_approval=True` → admins approve invite-link joiners. `community_jid` creates it inside that community (community admins only). Participants WhatsApp refused are returned in `failed_participants`. |
 | `update_group_settings(group_jid, name=None, description=None, announce=None, locked=None, member_add=None, join_approval=None)` | Changes only the fields passed. With no fields it returns the current state. |
 | `update_group_participants(group_jid, participants, action)` | `action` is `add`, `remove`, `promote` or `demote`; per-participant `ok` flags in `results`. |
 | `get_group_invite_link(group_jid, reset=False)` | The group's (or community's) `https://chat.whatsapp.com/…` link and `code`. `reset=True` revokes the current link and returns a new one. Admins only. |
+| `set_group_picture(group_jid, image_url=None, image_path=None, image_base64=None, remove=False)` | Sets the picture of a group, or of a community itself (pass the community's jid), from exactly one source; `remove=True` clears it. Any JPEG, PNG or WebP up to 10 MB is turned upright, centre-cropped, scaled to 640x640 and sent as JPEG. Returns `picture_id`, `is_community` and what was sent in `image`. Community pictures need community admin rights; group pictures need admin rights unless the group's info is open to all members (`locked=False`). |
 | `list_communities(community_jid=None, include_sub_groups=None)` | Communities you belong to, each with `announcement_group` and `sub_groups` (`jid`, `name`, `is_announcement_group`, `joined`, `hidden`, `is_general_chat`, `size`). Without `community_jid` it is a quick overview listing the groups you have joined (`sub_groups_source: joined_only`); with one `community_jid` it shows that community's complete group list from WhatsApp (`server`). `include_sub_groups=True` fetches complete lists for every community, but see the rate-limit note below. |
 | `list_community_participants(community_jid, with_names=True)` | Everyone in any of the community's groups, once each: `jid`, `phone`, `lid` and (with `with_names`) a `name` from the local contact store. Community admins only. |
 | `create_community(name, description=None)` | Creates a community with you as admin. WhatsApp adds its announcement group automatically (returned as `announcement_group`); add groups with `create_group(community_jid=…)` or `update_community_groups`. |
@@ -92,9 +94,51 @@ Response: `{"success": true, "group_jid", "link": "https://chat.whatsapp.com/…
 one. It is a POST either way so the destructive variant cannot be hit by a stray GET.
 Errors: `403` (not an admin, or not in the group), `404` (no such group), `502` otherwise.
 
+### `POST /api/group/picture`
+
+```json
+{"group_jid": "1203…@g.us", "image_url": "https://…"}
+{"group_jid": "1203…@g.us", "image_path": "/abs/path/in/media/roots/pic.png"}
+{"group_jid": "1203…@g.us", "image_base64": "iVBORw0…"}
+{"group_jid": "1203…@g.us", "remove": true}
+```
+
+Exactly one image source, or `remove: true` with none. `group_jid` may be a group or a
+community (its own picture). Response: `{"success": true, "group_jid", "is_community"
+(null if the group info could not be read), "removed", "picture_id" (null after a removal),
+"image"?: {"source", "format", "original_width", "original_height", "width": 640, "height":
+640, "bytes"}}`.
+
+- **Conversion.** JPEG, PNG and WebP are accepted (GIF and others are not). The image is
+  turned upright by its EXIF orientation (JPEG), centre-cropped to a square, scaled up or
+  down to 640x640 (Catmull-Rom), flattened onto white where transparent and encoded as
+  JPEG at quality 85, which is what WhatsApp's own clients upload. Input is capped at
+  10 MB and 50 megapixels; the dimensions are checked before any pixels are decoded.
+- **`image_url`** must be `https`. The download has a 15 s timeout, at most 3 redirects
+  (all `https`), and the response must say `image/jpeg`, `image/png` or `image/webp`. The
+  bridge refuses to connect to loopback, private, link-local, carrier-grade-NAT (which
+  includes Tailscale) and other non-public addresses; the check runs on the resolved IP of
+  every connection, so DNS tricks and redirects cannot reach local services.
+- **`image_path`** is confined to `WHATSAPP_MEDIA_ROOTS`, exactly like `/api/send`.
+- **`image_base64`** may be standard or URL-safe base64, with or without padding or line
+  breaks, or a `data:image/…;base64,` URL. The request body is capped at about 14 MB.
+- **Permissions.** Before writing, the bridge reads the group: a known non-admin of a
+  community, or of a group whose info is locked to admins, gets `403` without anything
+  being sent. When the info does not say (WhatsApp lists only some of a community's
+  members in it), WhatsApp decides and a refusal is also `403` with the same message.
+
+Errors: `400` (bad input or an image that cannot be used), `413` (over 10 MB), `403` (not
+allowed, or not in the group), `404` (no such group), `429` (rate-limited), `502` otherwise.
+
 ### `GET /api/profile-picture?jid=<jid|phone|group>&preview=1`
 
 Response: `{"success": true, "jid": "…", "url": "https://…" | null, "id"?, "type"?, "reason"?: "not_set" | "hidden" | "unchanged"}`.
+
+For a community the plain picture query answers `401` ("hidden") to anyone who is not in
+the community's parent group itself, which is most members (seen live: the community
+admin's read works, ordinary members get `hidden`). On a `401` for an `@g.us` JID the bridge
+therefore retries with whatsmeow's community query (`IsCommunity`, a `w:g2` IQ) and uses
+that answer when it is definite.
 
 ### `GET /api/communities?community_jid=<jid>&sub_groups=0|1`
 
@@ -184,6 +228,14 @@ changed the description recently" on the phone). The bridge sends it automatical
 exposed so a bad value (for example the literal string `undefined`) can be diagnosed.
 
 ## Notes
+
+- **Community pictures are set like group pictures.** whatsmeow's `SetGroupPhoto` sends an
+  iq set in `w:profile:picture` with `target` = the `@g.us` JID, and has no
+  community-specific variant; whatsapp-rust does the same. A community admin's plain read of
+  the community picture returns it from that same namespace, which is the evidence that the
+  community's own picture lives there. Setting it was not tried on a live account (writes
+  are unit-tested only); if WhatsApp ever refuses it for a community admin, the error comes
+  back as `success: false` with WhatsApp's message.
 
 - The bridge must be rebuilt (`go build`) and restarted for the new routes to exist; an old
   binary answers `404` for them and the MCP tools report that as `success: false` with the

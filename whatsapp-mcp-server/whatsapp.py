@@ -1334,9 +1334,10 @@ def _bridge_result(response: Any) -> dict[str, Any]:
     return body
 
 
-def _bridge_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _bridge_post(path: str, payload: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"timeout": timeout} if timeout is not None else {}
     try:
-        response = requests.post(f"{WHATSAPP_API_BASE_URL}{path}", json=payload, headers=_bridge_headers())
+        response = requests.post(f"{WHATSAPP_API_BASE_URL}{path}", json=payload, headers=_bridge_headers(), **kwargs)
         return _bridge_result(response)
     except requests.RequestException as e:
         return {"success": False, "message": f"Request error: {str(e)}"}
@@ -1501,6 +1502,56 @@ def get_group_invite_link(group_jid: str, reset: bool = False) -> dict[str, Any]
     if reset:
         payload["reset"] = True
     return _bridge_post("/group/invite-link", payload)
+
+
+GROUP_PICTURE_SOURCES = ("image_url", "image_path", "image_base64")
+
+
+def set_group_picture(
+    group_jid: str,
+    image_url: str | None = None,
+    image_path: str | None = None,
+    image_base64: str | None = None,
+    remove: bool = False,
+    timeout: float = 50,
+) -> dict[str, Any]:
+    """Set (or with ``remove=True`` clear) a group's or community's picture via POST /api/group/picture.
+
+    Exactly one image source unless ``remove``. The bridge downloads ``image_url``, reads
+    ``image_path`` from inside its media roots, decodes ``image_base64``, and converts the
+    image to a 640x640 JPEG. Its budget is 40s, so the client timeout sits just above it.
+    """
+    jid = _validate_group_jid(group_jid)
+    if not jid:
+        return _failure("group_jid must be a group or community JID ending in @g.us")
+    given = {
+        name: value.strip()
+        for name, value in zip(GROUP_PICTURE_SOURCES, (image_url, image_path, image_base64), strict=True)
+        if isinstance(value, str) and value.strip()
+    }
+    payload: dict[str, Any] = {"group_jid": jid}
+    if remove:
+        if given:
+            return _failure("remove=True takes no image; drop " + ", ".join(given))
+        payload["remove"] = True
+    elif not given:
+        return _failure("Give exactly one of image_url, image_path or image_base64, or remove=True")
+    elif len(given) > 1:
+        return _failure("Give only one image source; got " + " and ".join(given))
+    else:
+        source, value = next(iter(given.items()))
+        if source == "image_url" and not value.lower().startswith("https://"):
+            return _failure("image_url must be an https:// URL")
+        if source == "image_path":
+            value = os.path.expanduser(value)
+            if not os.path.isabs(value):
+                return _failure("image_path must be an absolute path")
+            if not os.path.isfile(value):
+                return _failure(f"Image file not found: {value}")
+        payload[source] = value
+    result = _bridge_post("/group/picture", payload, timeout=timeout)
+    result.setdefault("group_jid", jid)
+    return result
 
 
 def get_profile_picture(jid: str, preview: bool = True, timeout: float = 15) -> dict[str, Any]:

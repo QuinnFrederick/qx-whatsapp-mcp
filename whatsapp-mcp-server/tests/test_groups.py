@@ -23,8 +23,8 @@ class DummyResponse:
 def _capture_post(monkeypatch, payload=None, status_code=200, text="OK"):
     calls = []
 
-    def fake_post(url, json, headers=None):
-        calls.append({"url": url, "json": json, "headers": headers})
+    def fake_post(url, json, headers=None, **kwargs):
+        calls.append({"url": url, "json": json, "headers": headers, "kwargs": kwargs})
         return DummyResponse(status_code=status_code, payload=payload, text=text)
 
     monkeypatch.setattr(whatsapp.requests, "post", fake_post)
@@ -500,6 +500,136 @@ def test_get_group_invite_link_validates_and_surfaces_bridge_errors(monkeypatch)
     denied = whatsapp.get_group_invite_link("120363012345678901@g.us")
     assert denied["success"] is False
     assert "only group admins" in denied["message"]
+
+
+# --- group and community pictures -----------------------------------------
+
+GROUP = "120363000000000100@g.us"
+COMMUNITY = "120363000000000200@g.us"
+
+
+def test_set_group_picture_sends_each_source(monkeypatch, tmp_path):
+    picture = tmp_path / "pic.png"
+    picture.write_bytes(b"png")
+    calls = _capture_post(monkeypatch, payload={"success": True, "picture_id": "1700000000"})
+
+    by_url = whatsapp.set_group_picture(f" {GROUP} ", image_url=" https://example.com/pic.webp ")
+    whatsapp.set_group_picture(GROUP, image_path=str(picture))
+    whatsapp.set_group_picture(COMMUNITY, image_base64=" aGVsbG8= ")
+    whatsapp.set_group_picture(GROUP, image_url="  ", image_base64="data:image/png;base64,aGVsbG8=")
+
+    assert by_url["picture_id"] == "1700000000"
+    assert by_url["group_jid"] == GROUP  # filled in when the bridge omits it
+    assert all(c["url"].endswith("/group/picture") for c in calls)
+    assert [c["json"] for c in calls] == [
+        {"group_jid": GROUP, "image_url": "https://example.com/pic.webp"},
+        {"group_jid": GROUP, "image_path": str(picture)},
+        {"group_jid": COMMUNITY, "image_base64": "aGVsbG8="},
+        {"group_jid": GROUP, "image_base64": "data:image/png;base64,aGVsbG8="},
+    ]
+    # The bridge downloads and converts within 40s; the client waits a little longer.
+    assert all(c["kwargs"] == {"timeout": 50} for c in calls)
+
+
+def test_set_group_picture_expands_home_in_image_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "pic.jpg").write_bytes(b"jpg")
+    calls = _capture_post(monkeypatch, payload={"success": True})
+
+    whatsapp.set_group_picture(GROUP, image_path="~/pic.jpg")
+
+    assert calls[0]["json"]["image_path"] == str(tmp_path / "pic.jpg")
+
+
+def test_set_group_picture_remove_sends_no_image(monkeypatch):
+    calls = _capture_post(monkeypatch, payload={"success": True, "removed": True, "picture_id": None})
+
+    result = whatsapp.set_group_picture(COMMUNITY, remove=True)
+
+    assert result["removed"] is True
+    assert calls[0]["json"] == {"group_jid": COMMUNITY, "remove": True}
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"group_jid": "12025551234@s.whatsapp.net", "remove": True}, "group_jid"),
+        ({"group_jid": GROUP}, "exactly one of image_url, image_path or image_base64"),
+        ({"group_jid": GROUP, "image_url": " ", "image_base64": ""}, "exactly one of"),
+        (
+            {"group_jid": GROUP, "image_url": "https://example.com/a.png", "image_base64": "aGk="},
+            "only one image source; got image_url and image_base64",
+        ),
+        ({"group_jid": GROUP, "remove": True, "image_url": "https://example.com/a.png"}, "drop image_url"),
+        ({"group_jid": GROUP, "image_url": "http://example.com/a.png"}, "https://"),
+        ({"group_jid": GROUP, "image_url": "example.com/a.png"}, "https://"),
+        ({"group_jid": GROUP, "image_path": "pic.png"}, "absolute path"),
+        ({"group_jid": GROUP, "image_path": "/nonexistent/dir/pic.png"}, "not found"),
+    ],
+)
+def test_set_group_picture_validates_before_calling_the_bridge(monkeypatch, kwargs, message):
+    calls = _capture_post(monkeypatch, payload={"success": True})
+
+    result = whatsapp.set_group_picture(**kwargs)
+
+    assert result["success"] is False
+    assert message in result["message"]
+    assert calls == []
+
+
+def test_set_group_picture_surfaces_bridge_refusals(monkeypatch):
+    _capture_post(
+        monkeypatch,
+        payload={"success": False, "message": "only community admins can change the community's picture"},
+        status_code=403,
+    )
+    denied = whatsapp.set_group_picture(COMMUNITY, image_base64="aGVsbG8=")
+    assert denied["success"] is False
+    assert "only community admins" in denied["message"]
+    assert denied["group_jid"] == COMMUNITY
+
+    _capture_post(monkeypatch, payload=None, status_code=413, text="too large")
+    too_big = whatsapp.set_group_picture(GROUP, image_base64="aGVsbG8=")
+    assert too_big["success"] is False
+    assert "413" in too_big["message"]
+
+
+def test_set_group_picture_reports_an_unreachable_bridge(monkeypatch):
+    def refuse(*args, **kwargs):
+        raise whatsapp.requests.ConnectionError("connection refused")
+
+    monkeypatch.setattr(whatsapp.requests, "post", refuse)
+
+    result = whatsapp.set_group_picture(GROUP, remove=True)
+
+    assert result["success"] is False
+    assert "connection refused" in result["message"]
+
+
+def test_set_group_picture_tool_delegates_with_keyword_arguments(monkeypatch):
+    seen = []
+    monkeypatch.setattr(mcp_main, "whatsapp_set_group_picture", lambda *a, **k: seen.append((a, k)) or {})
+
+    mcp_main.set_group_picture(GROUP, image_url="https://example.com/a.png")
+    mcp_main.set_group_picture(COMMUNITY, remove=True)
+
+    assert seen == [
+        (
+            (GROUP,),
+            {"image_url": "https://example.com/a.png", "image_path": None, "image_base64": None, "remove": False},
+        ),
+        ((COMMUNITY,), {"image_url": None, "image_path": None, "image_base64": None, "remove": True}),
+    ]
+
+
+async def test_set_group_picture_is_registered_with_a_clear_schema():
+    tools = {t.name: t for t in await mcp_main.mcp.list_tools()}
+
+    tool = tools["set_group_picture"]
+    assert set(tool.inputSchema["properties"]) == {"group_jid", "image_url", "image_path", "image_base64", "remove"}
+    assert tool.inputSchema["required"] == ["group_jid"]
+    for phrase in ("exactly ONE image source", "640x640", "community", "remove=True", "admins"):
+        assert phrase in tool.description
 
 
 # --- communities ----------------------------------------------------------

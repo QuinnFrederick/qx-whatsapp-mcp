@@ -34,6 +34,7 @@ A Model Context Protocol (MCP) server for WhatsApp, enabling Claude to read and 
 - **Media Support**: Send and download images, videos, documents, and voice messages
 - **Call History**: Capture incoming voice/video calls into a local SQLite table (live, 1:1 and group)
 - **Slow-send jobs (fork)**: Send one personal message to each of up to 100 people in the background, paced 45–90 s apart with breaks, resumable and never double-sent
+- **People list (fork)**: A private, encrypted list of people (flavour, place, tags) and events (invited, joined, attended) to choose invitees from
 - **Webhook Integration**: Forward incoming messages to external services
 - **Local Storage**: All messages stored locally in SQLite - only sent to Claude when you allow it
 
@@ -413,6 +414,20 @@ rehearsed with `dry_run=True`. Follow and steer them with `get_send_job`, `list_
 `pause_send_job`, `resume_send_job` (optionally `retry_failed=True`) and `cancel_send_job`.
 Details, limits and the `/api/send-jobs` endpoints are in [`FORK.md`](./FORK.md#slow-send-jobs).
 
+### People list for event invites (fork)
+
+A private list of people kept by the MCP server: `add_person` (look someone up by name or
+phone, confirm the right one from candidates with pictures, then save them with a flavour
+of cool, warm or hot, a place and tags), `update_person`, `remove_person` and
+`query_people` (for example "warm or above, in Stroud or Bristol, not tagged
+birthdays-only"). Events track who was invited, joined the event's WhatsApp group
+(`sync_event_group`) or attended (`mark_attended`); see them with `event_report`.
+`start_send_job` can take a `people_filter` and an `event_id`, recording everyone it sends
+to as invited. `render_review_page` writes a local HTML contact sheet to check the list. The
+list is one AES-256-GCM-encrypted file next to `whatsapp.db`, keyed from the macOS Keychain
+or `WHATSAPP_PEOPLE_KEY`, and stores nothing beyond those fields. Details are in
+[`FORK.md`](./FORK.md#people-list-for-event-invites).
+
 ### Chat Operations
 
 All chat tools (`list_chats`, `get_chat`, `get_direct_chat_by_contact`,
@@ -524,6 +539,9 @@ Copy `.env.example` to `.env` and configure as needed:
 | `WHATSAPP_SEND_JOB_BATCH_BREAK_S` | `300`                         | Slow-send jobs: length of the break (seconds) |
 | `WHATSAPP_SEND_JOB_MAX_RECIPIENTS` | `100`                        | Slow-send jobs: most unique recipients per job; bigger jobs are rejected |
 | `WHATSAPP_SEND_JOB_DRY_RUN` | `false`                             | Slow-send jobs: `true` makes every new job a dry run that sends nothing |
+| `WHATSAPP_PEOPLE_DB_PATH` | `people.sqlite.enc` next to `WHATSMEOW_DB_PATH` | People list: the encrypted list file (refused in cloud-synced folders) |
+| `WHATSAPP_PEOPLE_KEY` | unset (macOS Keychain item `qx-whatsapp-mcp-people`) | People list: base64 of a 32-byte key; set it when the server cannot read the Keychain |
+| `WHATSAPP_PEOPLE_REVIEW_DIR` | `people-review/` next to `WHATSMEOW_DB_PATH` | People list: where `render_review_page` writes contact sheets |
 | `WHATSAPP_MCP_TRANSPORT` | `stdio`                                | MCP transport to serve clients: `stdio`, `http`, or `sse` |
 | `WHATSAPP_MCP_HOST`    | `127.0.0.1`                              | Bind address for the `http`/`sse` transports |
 | `WHATSAPP_MCP_PORT`    | `8000`                                   | Port for the `http`/`sse` transports |

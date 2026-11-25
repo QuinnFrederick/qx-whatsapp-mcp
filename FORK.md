@@ -1,14 +1,16 @@
 # Fork additions
 
 **qx-whatsapp-mcp** is a fork of [`verygoodplugins/whatsapp-mcp`](https://github.com/verygoodplugins/whatsapp-mcp)
-that adds WhatsApp **group management**, **communities**, **profile pictures** and
-**slow-send jobs** (one personal message to each of many people, paced like a human).
+that adds WhatsApp **group management**, **communities**, **profile pictures**,
+**slow-send jobs** (one personal message to each of many people, paced like a human) and a
+private, encrypted **people list** for event invites.
 Everything lives in new files so the diff against upstream stays small:
 
 | Component | File | Upstream touch |
 |---|---|---|
 | Bridge endpoints | `whatsapp-bridge/groups.go`, `communities.go`, `group_picture.go` (+ `_test.go`, `testdata/`) | one `registerGroupRoutes(...)` line in `main.go` (it registers the community and picture routes too, and passes the media roots) |
 | Slow-send jobs | `whatsapp-bridge/send_jobs.go` (+ `send_jobs_test.go`) | one `registerSendJobRoutes(...)` line in `newRESTMux`, plus starting the runner before the REST server and stopping it before `client.Disconnect()` in `main()`; the reconnect loop now stops on its own channel so it can no longer swallow the SIGTERM meant for `main()` |
+| People list | `whatsapp-mcp-server/people.py` (+ `tests/test_people.py`) | none: MCP server only, tools in `main.py` |
 | Bridge dependency | `golang.org/x/image` (Go team) | WebP decoding and image scaling for group pictures; v0.45.0 is the newest that builds with Go 1.25 |
 | MCP tools | `whatsapp-mcp-server/main.py`, `whatsapp.py` (appended section) | tool definitions and bridge client functions |
 | Tests | `whatsapp-mcp-server/tests/test_groups.py`, `test_send_jobs.py` | + five rows in `test_bridge_auth.py` |
@@ -87,6 +89,72 @@ How it behaves:
   later never turns a dry job real (or marks real recipients as sent without sending).
 - Messages go through the same path as `send_message` (LID resolution, disappearing-message
   settings, stored in `messages.db` so they show up in `list_messages`).
+
+### People list for event invites
+
+A small private list of people and events, kept by the MCP server in its own encrypted
+file. The bridge never reads it and it never touches `whatsapp.db` or `messages.db`, which
+are only read (read-only) to check that a person is a real contact.
+
+| Tool | What it does |
+|---|---|
+| `add_person(query=None, jid=None, flavour=None, display_name=None, place=None, tags=None)` | Two steps. With `query` (name or phone) it saves nothing and returns `candidates` (jid, name, phone, `avatar_url`, `already_on_list`) for the user to confirm. With the confirmed `jid` and a `flavour` it saves the person; the jid must be a contact or chat this account knows. |
+| `update_person(jid, flavour=None, place=None, add_tags=None, remove_tags=None, display_name=None)` | Changes only what is passed; `place=""` clears it. |
+| `remove_person(jid)` | Deletes the person and their status on every event. |
+| `query_people(min_flavour, places, tags_include, tags_any, tags_exclude, event_id, event_statuses)` | All filters AND together. Flavour is ordered (`cool` < `warm` < `hot`), so `min_flavour="warm"` is warm or hot. Places match case-insensitively. `event_statuses` takes `invited`, `joined`, `attended`, `declined` or `none` (not on the event). |
+| `create_event(name, date, group_jid=None)` | `date` is `YYYY-MM-DD`; `group_jid` optionally links the event's WhatsApp group. |
+| `sync_event_group(event_id, group_jid=None)` | Reads the group's members: listed people in it become `joined`, people who left lose it. Members not on the list are counted, not stored. |
+| `mark_attended(event_id, people, status="attended")` | Hand marks, `attended` or `declined`. |
+| `event_report(event_id=None)` | Without an id, all events with counts. With one: people by status, `ever_invited`, the linked send jobs and any warnings. It first records invites from the send jobs and re-reads the group if the last sync is over 10 minutes old. |
+| `render_review_page(...same filters..., title=None, with_avatars=True)` | Writes a self-contained HTML contact sheet (pictures embedded, name, number, flavour, place, tags) and returns its `path`. |
+
+`start_send_job` also takes `people_filter` (any `query_people` filter, as an object) and
+`event_id`. With a filter, the matching people are added to `recipients`, with their
+`display_name` filling `{name}`. With `event_id`, every recipient must be on the list, the
+job label defaults to the event name, and everyone the job sends to is recorded as
+`invited`. The bridge stays the record of what was sent: the MCP server copies its sent
+recipients into the event whenever the event is read (`event_report`, `query_people` with
+`event_id`, `render_review_page`). Dry runs are never recorded.
+
+Each person has one status per event, the strongest that applies: `attended` > `declined` >
+`joined` > `invited`. The time of each step is kept.
+
+**What is stored.** Per person: JID, display name, flavour, place and tags. Per event: name,
+date, optional group JID and, per person, when they were invited, joined, attended or
+declined. There is no notes field and nothing else about anyone. Group members who are not
+on the list, avatars and contact details are never stored.
+
+**Storage and encryption.**
+
+- File: `people.sqlite.enc` next to `whatsapp.db` (`WHATSAPP_PEOPLE_DB_PATH` to move it),
+  gitignored with the rest of `whatsapp-bridge/store/` and by name. It is refused inside
+  folders that cloud services usually sync (`~/Library/Mobile Documents`,
+  `~/Library/CloudStorage`, Dropbox, Google Drive, OneDrive, Box, `~/Desktop`,
+  `~/Documents`).
+- The whole SQLite database is encrypted with AES-256-GCM (`cryptography`, already a
+  dependency) and only ever opened in memory, so no plaintext copy, journal or WAL is
+  written. Each change is saved with `secure_delete` and a `VACUUM`, so removed people are
+  gone from the file, then written atomically with mode `0600` under an `flock` that
+  several server processes share.
+- Key: `WHATSAPP_PEOPLE_KEY` (base64 of 32 random bytes) if set, otherwise the macOS
+  Keychain item with service `qx-whatsapp-mcp-people` and account `people-list`. The first
+  write creates that item if the list does not exist yet. The key goes through stdin, never
+  argv, and the tool says it was created so it can be backed up. If the list exists but the
+  key is missing, it refuses to open; it never replaces the key and never falls back to
+  plaintext.
+- Why not SQLCipher: the Go bridge cannot link SQLCipher next to the `go-sqlite3` driver
+  whatsmeow uses (both bundle SQLite and register the same driver name), and on the Python
+  side it would add a native dependency. Encrypting the whole database image gives the same
+  protection at rest for a list this size.
+- A background service may not be able to read the login Keychain (it is locked until you
+  log in, and a launchd daemon has no way to show an access prompt). Then the tools say so,
+  and the fix is to put the key in the service's environment as `WHATSAPP_PEOPLE_KEY`.
+
+**Review pages** go to `people-review/` next to the list (`WHATSAPP_PEOPLE_REVIEW_DIR`):
+gitignored, folder mode `0700`, file mode `0600`, excluded from Time Machine when the
+folder is created, and refused in cloud-synced folders. They hold other people's details in
+plain HTML, so delete them when done. Pictures are fetched only from `*.whatsapp.net` over
+HTTPS, at most 2 MB each, one lookup every 0.3 s.
 
 ## Bridge REST endpoints
 

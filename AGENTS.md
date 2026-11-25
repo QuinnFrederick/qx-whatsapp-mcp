@@ -109,6 +109,9 @@ A failing blocking job is a hard block — fix it or explain in the PR why it's 
 | `WHATSAPP_SEND_JOB_BATCH_BREAK_S` | `300` | Bridge: length of the slow-send break (seconds) |
 | `WHATSAPP_SEND_JOB_MAX_RECIPIENTS` | `100` | Bridge: most unique recipients per slow-send job; bigger jobs are rejected |
 | `WHATSAPP_SEND_JOB_DRY_RUN` | `false` | Bridge: `true` makes every new slow-send job a dry run (fixed per job at creation) |
+| `WHATSAPP_PEOPLE_DB_PATH` | `people.sqlite.enc` next to `WHATSMEOW_DB_PATH` | MCP server: encrypted people-list file (refused in cloud-synced folders) |
+| `WHATSAPP_PEOPLE_KEY` | unset (macOS Keychain item `qx-whatsapp-mcp-people` / `people-list`) | MCP server: base64 of the 32-byte people-list key; overrides the Keychain |
+| `WHATSAPP_PEOPLE_REVIEW_DIR` | `people-review/` next to `WHATSMEOW_DB_PATH` | MCP server: folder for `render_review_page` contact sheets |
 | `WHATSAPP_MCP_TRANSPORT` | `stdio` | MCP transport to serve clients: `stdio`, `http`, or `sse` |
 | `WHATSAPP_MCP_HOST` | `127.0.0.1` | Bind address for the `http`/`sse` transports |
 | `WHATSAPP_MCP_PORT` | `8000` | Port for the `http`/`sse` transports |
@@ -138,6 +141,7 @@ When adding a new env var: document it here, in `README.md`, and in `.env.exampl
 | Change webhook payload | `whatsapp-bridge/webhook.go` |
 | Group management / profile pictures (fork, see `FORK.md`) | `whatsapp-bridge/groups.go`, tools in `whatsapp-mcp-server/main.py` |
 | Slow-send jobs (fork, see `FORK.md`) | `whatsapp-bridge/send_jobs.go`, tools in `whatsapp-mcp-server/main.py` |
+| People list / events (fork, see `FORK.md`) | `whatsapp-mcp-server/people.py`, tools in `whatsapp-mcp-server/main.py` |
 | Change CI behavior | `.github/workflows/*.yml` |
 | Change release behavior | `release-please-config.json`, `.release-please-manifest.json` |
 

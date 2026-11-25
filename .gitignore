@@ -25,6 +25,9 @@ whatsapp-bridge/whatsapp-client
 
 # WhatsApp data (personal/sensitive)
 whatsapp-bridge/store/
+# People list and its review pages (fork), wherever they are configured to live
+people.sqlite.enc*
+people-review/
 
 # Python
 __pycache__/

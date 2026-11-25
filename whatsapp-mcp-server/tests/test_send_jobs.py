@@ -241,7 +241,6 @@ def test_job_actions_reject_bad_ids(posts, func):
 def test_mcp_tools_forward_arguments(monkeypatch):
     seen = []
     for name in (
-        "start_send_job",
         "get_send_job",
         "list_send_jobs",
         "pause_send_job",
@@ -253,8 +252,11 @@ def test_mcp_tools_forward_arguments(monkeypatch):
             f"whatsapp_{name}",
             lambda *a, _name=name, **kw: seen.append((_name, a, kw)) or {"success": True},
         )
+    monkeypatch.setattr(
+        mcp_main, "people_start_send_job", lambda *a, **kw: seen.append(("start_send_job", a, kw)) or {"success": True}
+    )
 
-    mcp_main.start_send_job([{"recipient": "1", "name": "A"}], "Hi {name}", label="x", dry_run=True)
+    mcp_main.start_send_job("Hi {name}", [{"recipient": "1", "name": "A"}], label="x", dry_run=True)
     mcp_main.get_send_job(4, recipient_status="sent")
     mcp_main.list_send_jobs(status="paused", limit=5)
     mcp_main.pause_send_job(4)
@@ -262,7 +264,17 @@ def test_mcp_tools_forward_arguments(monkeypatch):
     mcp_main.cancel_send_job(4)
 
     assert seen == [
-        ("start_send_job", ([{"recipient": "1", "name": "A"}], "Hi {name}"), {"label": "x", "dry_run": True}),
+        (
+            "start_send_job",
+            ("Hi {name}",),
+            {
+                "recipients": [{"recipient": "1", "name": "A"}],
+                "people_filter": None,
+                "event_id": None,
+                "label": "x",
+                "dry_run": True,
+            },
+        ),
         ("get_send_job", (4,), {"recipient_status": "sent"}),
         ("list_send_jobs", (), {"status": "paused", "limit": 5}),
         ("pause_send_job", (4,), {}),
@@ -278,8 +290,15 @@ async def test_send_job_tools_are_registered_with_clear_schemas():
         return " ".join(tools[name].description.split())
 
     start = tools["start_send_job"]
-    assert set(start.inputSchema["properties"]) == {"recipients", "message_template", "label", "dry_run"}
-    assert start.inputSchema["required"] == ["recipients", "message_template"]
+    assert set(start.inputSchema["properties"]) == {
+        "recipients",
+        "message_template",
+        "people_filter",
+        "event_id",
+        "label",
+        "dry_run",
+    }
+    assert start.inputSchema["required"] == ["message_template"]
     for phrase in ("45-90 second", "{name}", "dry_run", "at most once", "100 unique", "pauses itself", "queued"):
         assert phrase in text("start_send_job")
     assert tools["resume_send_job"].inputSchema["required"] == ["job_id"]

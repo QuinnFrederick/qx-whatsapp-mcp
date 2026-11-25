@@ -7,6 +7,36 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_config import resolve_host, resolve_port, resolve_transport
 from parent_watchdog import install_stdio_parent_watchdog
+from people import (
+    add_person as people_add_person,
+)
+from people import (
+    create_event as people_create_event,
+)
+from people import (
+    event_report as people_event_report,
+)
+from people import (
+    mark_attended as people_mark_attended,
+)
+from people import (
+    query_people as people_query_people,
+)
+from people import (
+    remove_person as people_remove_person,
+)
+from people import (
+    render_review_page as people_render_review_page,
+)
+from people import (
+    start_send_job as people_start_send_job,
+)
+from people import (
+    sync_event_group as people_sync_event_group,
+)
+from people import (
+    update_person as people_update_person,
+)
 from whatsapp import (
     cancel_send_job as whatsapp_cancel_send_job,
 )
@@ -93,9 +123,6 @@ from whatsapp import (
 )
 from whatsapp import (
     set_group_picture as whatsapp_set_group_picture,
-)
-from whatsapp import (
-    start_send_job as whatsapp_start_send_job,
 )
 from whatsapp import (
     update_community_groups as whatsapp_update_community_groups,
@@ -841,8 +868,10 @@ def update_community_groups(community_jid: str, group_jids: list[str], action: s
 
 @mcp.tool()
 def start_send_job(
-    recipients: list[dict[str, str] | str],
     message_template: str,
+    recipients: list[dict[str, str] | str] | None = None,
+    people_filter: dict[str, Any] | None = None,
+    event_id: int | None = None,
     label: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -854,9 +883,19 @@ def start_send_job(
     people take about 75 minutes. The job keeps running after this conversation ends and
     survives bridge restarts; follow it with get_send_job.
 
-    Before calling, resolve names to JIDs with resolve_contacts and get the user's approval
-    of the final recipient list and the exact message: sent messages cannot be recalled.
-    Use dry_run=True to rehearse.
+    Choose who gets it with recipients, people_filter, or both (they are merged):
+    - recipients: explicit people (resolve names to JIDs with resolve_contacts first).
+    - people_filter: people from the private people list, chosen exactly like query_people,
+      e.g. {"min_flavour": "warm", "places": ["Stroud"], "tags_exclude": ["birthdays-only"]},
+      or everyone who attended an earlier event: {"event_id": 3, "event_statuses":
+      ["attended"]}. Their display_name fills {name}. Run query_people with the same filter
+      first and show the user who it selects.
+    - event_id: the event these invites are for. Everyone the job sends to is recorded as
+      "invited" on that event (see event_report). With event_id every recipient must be on
+      the people list. Dry runs are not recorded.
+
+    Before calling, get the user's approval of the final recipient list and the exact
+    message: sent messages cannot be recalled. Use dry_run=True to rehearse.
 
     Rules the bridge enforces:
     - Each person is messaged at most once per job. The same person given twice (by phone
@@ -869,25 +908,37 @@ def start_send_job(
     - Jobs run one at a time. A new job waits with status "queued" behind the running one.
 
     Args:
-        recipients: The people to message, each {"recipient": <JID such as
+        message_template: The message text. Every "{name}" becomes that recipient's name, and
+                    then every recipient needs a name. No other {placeholders} exist, so write
+                    dates, places and links out in full.
+        recipients: Explicit people, each {"recipient": <JID such as
                     "447700900123@s.whatsapp.net" or "...@lid", or a phone number with
                     country code>, "name": <the name to put in {name}>}. Plain JID/phone
                     strings are fine when the template has no {name}. People only: group
                     JIDs are rejected.
-        message_template: The message text. Every "{name}" becomes that recipient's name, and
-                    then every recipient needs a name. No other {placeholders} exist, so write
-                    dates, places and links out in full.
+        people_filter: A query_people filter (keys: min_flavour, places, tags_include,
+                    tags_any, tags_exclude, event_id, event_statuses) picking people from
+                    the people list.
+        event_id: Event to record the invites on (from create_event or event_report). The
+                  job's label defaults to the event's name.
         label: Optional short label to recognise the job later, e.g. "Birthday invites".
         dry_run: True runs the whole job with real pacing and progress tracking but sends
                  nothing to WhatsApp (recipients end up "sent" in a job marked dry_run).
 
     Returns:
         success and message, job (id, status, counts, next_send_at,
-        estimated_remaining_seconds, recipients, example_message) and duplicates_removed. On
-        failure nothing was created and message (plus errors, one per bad entry) says what to
-        fix.
+        estimated_remaining_seconds, recipients, example_message), duplicates_removed,
+        people_selected (with people_filter) and event_note (with event_id). On failure
+        nothing was created and message (plus errors, one per bad entry) says what to fix.
     """
-    return whatsapp_start_send_job(recipients, message_template, label=label, dry_run=dry_run)
+    return people_start_send_job(
+        message_template,
+        recipients=recipients,
+        people_filter=people_filter,
+        event_id=event_id,
+        label=label,
+        dry_run=dry_run,
+    )
 
 
 @mcp.tool()
@@ -980,6 +1031,226 @@ def cancel_send_job(job_id: int) -> dict[str, Any]:
         job_id: The job's id
     """
     return whatsapp_cancel_send_job(job_id)
+
+
+# --- People list for event invites (fork addition, see FORK.md) -------------------
+
+
+@mcp.tool()
+def add_person(
+    query: str | None = None,
+    jid: str | None = None,
+    flavour: str | None = None,
+    display_name: str | None = None,
+    place: str | None = None,
+    tags: list[str] | None = None,
+) -> dict[str, Any]:
+    """Add someone to the private people list used for event invites. Two steps.
+
+    1. Call with query (a name or a phone number with country code). Nothing is saved: you
+       get candidates (jid, name, phone, avatar_url, already_on_list). Show them to the
+       user, with the pictures, and ask which one is meant.
+    2. Call again with the confirmed jid and a flavour (ask the user; do not guess). The jid
+       must be a contact or chat this WhatsApp account already knows.
+
+    The list is private, encrypted on disk and minimal: only jid, display_name, flavour,
+    place and tags are stored. Do not try to store anything else about people (there is no
+    notes field).
+
+    Args:
+        query: Name or phone number to look up candidates (step 1)
+        jid: The confirmed person's JID from the candidates (step 2)
+        flavour: How close they are, an ordered scale: "cool" < "warm" < "hot" (step 2)
+        display_name: Name to show and to use for {name} in invites; defaults to the contact
+                      name. A first name usually reads best in a personal invite.
+        place: Where they live, free text such as "Stroud" or "Bristol"
+        tags: Free-form labels such as "climbing" or "birthdays-only" (lowercased; spaces
+              become hyphens)
+    """
+    return people_add_person(query=query, jid=jid, flavour=flavour, display_name=display_name, place=place, tags=tags)
+
+
+@mcp.tool()
+def update_person(
+    jid: str,
+    flavour: str | None = None,
+    place: str | None = None,
+    add_tags: list[str] | None = None,
+    remove_tags: list[str] | None = None,
+    display_name: str | None = None,
+) -> dict[str, Any]:
+    """Change someone on the people list. Only the fields you pass change.
+
+    Args:
+        jid: The person's JID (or phone number with country code)
+        flavour: "cool", "warm" or "hot"
+        place: New place; an empty string clears it
+        add_tags: Tags to add
+        remove_tags: Tags to remove
+        display_name: New display name
+    """
+    return people_update_person(
+        jid, flavour=flavour, place=place, add_tags=add_tags, remove_tags=remove_tags, display_name=display_name
+    )
+
+
+@mcp.tool()
+def remove_person(jid: str) -> dict[str, Any]:
+    """Remove someone from the people list for good, with their status on every event.
+
+    Their WhatsApp contact and chats are not touched. Messages already sent stay sent.
+
+    Args:
+        jid: The person's JID (or phone number with country code)
+    """
+    return people_remove_person(jid)
+
+
+@mcp.tool()
+def query_people(
+    min_flavour: str | None = None,
+    places: list[str] | None = None,
+    tags_include: list[str] | None = None,
+    tags_any: list[str] | None = None,
+    tags_exclude: list[str] | None = None,
+    event_id: int | None = None,
+    event_statuses: list[str] | None = None,
+) -> dict[str, Any]:
+    """Find people on the private people list. All filters combine (AND); omit one to ignore it.
+
+    The same filter can be passed as people_filter to start_send_job and to
+    render_review_page, so check who a filter selects here before sending.
+
+    Args:
+        min_flavour: "cool" (everyone), "warm" (warm and hot) or "hot" (hot only)
+        places: Only people whose place is one of these (case-insensitive exact match),
+                e.g. ["Stroud", "Bristol"]
+        tags_include: Only people who have every one of these tags
+        tags_any: Only people who have at least one of these tags
+        tags_exclude: Leave out anyone with any of these tags, e.g. ["birthdays-only"]
+        event_id: Only people with a status on this event (combine with event_statuses)
+        event_statuses: With event_id, which statuses count: "invited", "joined",
+                        "attended", "declined", or "none" for people not on the event at all
+                        (e.g. warm people not yet invited)
+
+    Returns:
+        success, count and people (jid, phone, display_name, flavour, place, tags, and
+        event_status when event_id is given), sorted by name.
+    """
+    return people_query_people(
+        min_flavour=min_flavour,
+        places=places,
+        tags_include=tags_include,
+        tags_any=tags_any,
+        tags_exclude=tags_exclude,
+        event_id=event_id,
+        event_statuses=event_statuses,
+    )
+
+
+@mcp.tool()
+def create_event(name: str, date: str, group_jid: str | None = None) -> dict[str, Any]:
+    """Create an event on the people list, to track who was invited, joined and attended.
+
+    Args:
+        name: Event name, e.g. "Winter party"
+        date: Date as YYYY-MM-DD
+        group_jid: Optional WhatsApp group for the event (ending in @g.us). People on the list
+                   who are in that group count as "joined"; it can also be linked later with
+                   sync_event_group.
+    """
+    return people_create_event(name, date, group_jid=group_jid)
+
+
+@mcp.tool()
+def sync_event_group(event_id: int, group_jid: str | None = None) -> dict[str, Any]:
+    """Mark people as "joined" from the membership of the event's WhatsApp group.
+
+    Reads the group's current participants: people on the list who are in it become
+    "joined", and anyone who has left loses that status. Group members who are not on the
+    list are only counted (not stored). event_report runs this by itself when the last sync
+    is more than 10 minutes old.
+
+    Args:
+        event_id: The event
+        group_jid: Link (or re-link) this group to the event first, ending in @g.us
+    """
+    return people_sync_event_group(event_id, group_jid=group_jid)
+
+
+@mcp.tool()
+def mark_attended(event_id: int, people: list[str], status: str = "attended") -> dict[str, Any]:
+    """Mark people by hand as having attended (or declined) an event.
+
+    Hand marks win over what was observed: someone marked attended or declined keeps that
+    status whatever the group shows. Marking attended clears declined, and the reverse.
+
+    Args:
+        event_id: The event
+        people: JIDs or phone numbers of people on the list
+        status: "attended" (default) or "declined"
+    """
+    return people_mark_attended(event_id, people, status=status)
+
+
+@mcp.tool()
+def event_report(event_id: int | None = None) -> dict[str, Any]:
+    """Report on an event: who was invited, joined, attended or declined. Without event_id,
+    lists all events with their counts.
+
+    Each person has one status, the strongest that applies: attended > declined > joined >
+    invited. Before reporting, invites are brought up to date from the event's send jobs and
+    the event group is re-read if its last sync is over 10 minutes old.
+
+    Args:
+        event_id: The event; omit to list events
+
+    Returns:
+        success, event, counts per status, ever_invited, people grouped by status (with the
+        time of each step), send_jobs (their status and counts) and any warnings.
+    """
+    return people_event_report(event_id)
+
+
+@mcp.tool()
+def render_review_page(
+    min_flavour: str | None = None,
+    places: list[str] | None = None,
+    tags_include: list[str] | None = None,
+    tags_any: list[str] | None = None,
+    tags_exclude: list[str] | None = None,
+    event_id: int | None = None,
+    event_statuses: list[str] | None = None,
+    title: str | None = None,
+    with_avatars: bool = True,
+) -> dict[str, Any]:
+    """Write a local HTML contact sheet of people on the list for the user to review.
+
+    Each card shows the profile picture (downloaded into the page), name, number, flavour,
+    place and tags. Filters work exactly like query_people. The file is written to a private,
+    gitignored folder on this machine and its path returned; tell the user the path rather
+    than pasting the page. It holds other people's details, so suggest deleting it when done.
+
+    Args:
+        min_flavour, places, tags_include, tags_any, tags_exclude, event_id, event_statuses:
+            As in query_people
+        title: Heading for the page
+        with_avatars: Fetch profile pictures (one WhatsApp lookup per person, paced)
+
+    Returns:
+        success, path, count and avatars_included.
+    """
+    return people_render_review_page(
+        min_flavour=min_flavour,
+        places=places,
+        tags_include=tags_include,
+        tags_any=tags_any,
+        tags_exclude=tags_exclude,
+        event_id=event_id,
+        event_statuses=event_statuses,
+        title=title,
+        with_avatars=with_avatars,
+    )
 
 
 def shutdown_handler(signum, frame):

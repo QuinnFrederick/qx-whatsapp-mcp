@@ -37,6 +37,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -114,24 +115,25 @@ func defaultSendJobSettings() sendJobSettings {
 func loadSendJobSettings() (sendJobSettings, []string) {
 	def := defaultSendJobSettings()
 	var warnings []string
-	whole := func(key string, min, fallback int) int {
+	whole := func(key string, min, max, fallback int) int {
 		raw := strings.TrimSpace(os.Getenv(key))
 		if raw == "" {
 			return fallback
 		}
 		n, err := strconv.Atoi(raw)
-		if err != nil || n < min {
-			warnings = append(warnings, fmt.Sprintf("%s=%q is not a whole number >= %d; using %d", key, raw, min, fallback))
+		if err != nil || n < min || n > max {
+			warnings = append(warnings, fmt.Sprintf("%s=%q is not a whole number from %d to %d; using %d", key, raw, min, max, fallback))
 			return fallback
 		}
 		return n
 	}
+	const day = 24 * 60 * 60 // longest gap or break accepted, in seconds
 	s := sendJobSettings{
-		MinDelay:      time.Duration(whole("WHATSAPP_SEND_JOB_MIN_DELAY_S", 0, int(def.MinDelay/time.Second))) * time.Second,
-		MaxDelay:      time.Duration(whole("WHATSAPP_SEND_JOB_MAX_DELAY_S", 0, int(def.MaxDelay/time.Second))) * time.Second,
-		BatchSize:     whole("WHATSAPP_SEND_JOB_BATCH_SIZE", 0, def.BatchSize),
-		BatchBreak:    time.Duration(whole("WHATSAPP_SEND_JOB_BATCH_BREAK_S", 0, int(def.BatchBreak/time.Second))) * time.Second,
-		MaxRecipients: whole("WHATSAPP_SEND_JOB_MAX_RECIPIENTS", 1, def.MaxRecipients),
+		MinDelay:      time.Duration(whole("WHATSAPP_SEND_JOB_MIN_DELAY_S", 0, day, int(def.MinDelay/time.Second))) * time.Second,
+		MaxDelay:      time.Duration(whole("WHATSAPP_SEND_JOB_MAX_DELAY_S", 0, day, int(def.MaxDelay/time.Second))) * time.Second,
+		BatchSize:     whole("WHATSAPP_SEND_JOB_BATCH_SIZE", 0, 100000, def.BatchSize),
+		BatchBreak:    time.Duration(whole("WHATSAPP_SEND_JOB_BATCH_BREAK_S", 0, day, int(def.BatchBreak/time.Second))) * time.Second,
+		MaxRecipients: whole("WHATSAPP_SEND_JOB_MAX_RECIPIENTS", 1, 100000, def.MaxRecipients),
 		ForceDryRun:   getEnvBool("WHATSAPP_SEND_JOB_DRY_RUN", false),
 	}
 	if s.MaxDelay < s.MinDelay {
@@ -151,6 +153,14 @@ func (s sendJobSettings) json() map[string]any {
 		"max_recipients":      s.MaxRecipients,
 		"force_dry_run":       s.ForceDryRun,
 	}
+}
+
+// longestGap is the furthest ahead the pacer can legitimately schedule a send.
+func (s sendJobSettings) longestGap() time.Duration {
+	if s.BatchBreak > s.MaxDelay {
+		return s.BatchBreak
+	}
+	return s.MaxDelay
 }
 
 func (s sendJobSettings) randomDelay(r func() float64) time.Duration {
@@ -287,10 +297,11 @@ func parseSendJobRecipient(raw string) (types.JID, error) {
 // recipients with their rendered messages. Every invalid entry is reported, not
 // just the first, so the caller can fix the list in one go.
 //
-// lidToPN maps an @lid JID to the person's phone JID when the bridge knows it,
-// so the same person given once by phone and once by LID is sent one message.
+// lidToPN and pnToLID map between a person's @lid and phone JIDs when the
+// bridge knows them (either may be nil), so the same person given once by phone
+// and once by LID is sent one message.
 func prepareSendJob(ctx context.Context, req sendJobCreateRequest, maxRecipients int,
-	lidToPN func(context.Context, types.JID) types.JID) ([]preparedRecipient, []duplicateRecipient, []string) {
+	lidToPN, pnToLID func(context.Context, types.JID) types.JID) ([]preparedRecipient, []duplicateRecipient, []string) {
 	var problems []string
 	usesName, err := validateTemplate(req.Template)
 	if err != nil {
@@ -305,6 +316,8 @@ func prepareSendJob(ctx context.Context, req sendJobCreateRequest, maxRecipients
 
 	var out []preparedRecipient
 	var dups []duplicateRecipient
+	// firstInput holds every known form (phone and LID JID) of each accepted
+	// recipient, mapped to the input it came from.
 	firstInput := map[types.JID]string{}
 	for i, in := range req.Recipients {
 		where := fmt.Sprintf("recipient %d (%q)", i+1, in.Recipient)
@@ -323,9 +336,21 @@ func prepareSendJob(ctx context.Context, req sendJobCreateRequest, maxRecipients
 			problems = append(problems, fmt.Sprintf("%s: name must be %d characters or fewer", where, maxSendJobNameRunes))
 			continue
 		}
-		if prev, dup := firstInput[jid]; dup {
+		forms := []types.JID{jid}
+		if jid.Server == types.DefaultUserServer && pnToLID != nil {
+			if lid := pnToLID(ctx, jid); !lid.IsEmpty() {
+				forms = append(forms, lid.ToNonAD())
+			}
+		}
+		if prev, dup := firstInput[forms[0]]; dup {
 			dups = append(dups, duplicateRecipient{Input: strings.TrimSpace(in.Recipient), JID: jid.String(), DuplicateOf: prev})
 			continue
+		}
+		if len(forms) > 1 {
+			if prev, dup := firstInput[forms[1]]; dup {
+				dups = append(dups, duplicateRecipient{Input: strings.TrimSpace(in.Recipient), JID: jid.String(), DuplicateOf: prev})
+				continue
+			}
 		}
 		if usesName && name == "" {
 			problems = append(problems, where+": the template uses {name} but this recipient has no name")
@@ -336,7 +361,9 @@ func prepareSendJob(ctx context.Context, req sendJobCreateRequest, maxRecipients
 			problems = append(problems, fmt.Sprintf("%s: the message is longer than WhatsApp's %d character limit", where, maxWhatsAppTextRunes))
 			continue
 		}
-		firstInput[jid] = strings.TrimSpace(in.Recipient)
+		for _, f := range forms {
+			firstInput[f] = strings.TrimSpace(in.Recipient)
+		}
 		out = append(out, preparedRecipient{JID: jid, Input: strings.TrimSpace(in.Recipient), Name: name, Message: msg})
 	}
 	if len(out) > maxRecipients {
@@ -784,8 +811,10 @@ func (d *sendJobDB) finish(w sendWork, sendErr error, at time.Time, p sendPacer)
 			}
 			reason := fmt.Sprintf("paused automatically: sending to %s failed: %s. Fix the cause, then resume "+
 				"(retry_failed=true to try that recipient again).", who, sendErr.Error())
-			if _, err := tx.Exec(`UPDATE send_jobs SET status = ?, pause_reason = ?, updated_at = ? WHERE id = ? AND status = ?`,
-				jobPaused, reason, ms, w.JobID, jobRunning); err != nil {
+			// Also when the job was paused by request while this send was in flight,
+			// so the reason shows the failure.
+			if _, err := tx.Exec(`UPDATE send_jobs SET status = ?, pause_reason = ?, updated_at = ? WHERE id = ? AND status IN (?, ?)`,
+				jobPaused, reason, ms, w.JobID, jobRunning, jobPaused); err != nil {
 				return err
 			}
 		}
@@ -806,7 +835,7 @@ func (d *sendJobDB) finish(w sendWork, sendErr error, at time.Time, p sendPacer)
 // recoverInterrupted settles recipients left in "sending" by a bridge that
 // stopped mid-send. wasSent reports whether messages.db shows the message going
 // out (it may be nil). Affected running jobs are paused; nothing is re-sent.
-func (d *sendJobDB) recoverInterrupted(now time.Time, wasSent func(jid, text string, since time.Time) (time.Time, bool)) ([]string, error) {
+func (d *sendJobDB) recoverInterrupted(now time.Time, wasSent func(jid, text string, since time.Time) (time.Time, bool)) (int, []string, error) {
 	type stuck struct {
 		jobID    int64
 		position int
@@ -817,20 +846,20 @@ func (d *sendJobDB) recoverInterrupted(now time.Time, wasSent func(jid, text str
 	rows, err := d.db.Query(`SELECT job_id, position, jid, message, last_attempt_at FROM send_job_recipients WHERE status = ?`,
 		recipientSending)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	var all []stuck
 	for rows.Next() {
 		var s stuck
 		if err := rows.Scan(&s.jobID, &s.position, &s.jid, &s.message, &s.lastAt); err != nil {
 			_ = rows.Close()
-			return nil, err
+			return 0, nil, err
 		}
 		all = append(all, s)
 	}
 	_ = rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	var notes []string
 	for _, s := range all {
@@ -840,7 +869,7 @@ func (d *sendJobDB) recoverInterrupted(now time.Time, wasSent func(jid, text str
 			if at, ok := wasSent(s.jid, s.message, since); ok {
 				if _, err := d.db.Exec(`UPDATE send_job_recipients SET status = ?, sent_at = ? WHERE job_id = ? AND position = ? AND status = ?`,
 					recipientSent, toMillis(at), s.jobID, s.position, recipientSending); err != nil {
-					return notes, err
+					return 0, notes, err
 				}
 				notes = append(notes, fmt.Sprintf("job %d: send to %s was interrupted but is in messages.db; marked sent", s.jobID, s.jid))
 				continue
@@ -858,11 +887,17 @@ func (d *sendJobDB) recoverInterrupted(now time.Time, wasSent func(jid, text str
 			return err
 		})
 		if err != nil {
-			return notes, err
+			return 0, notes, err
 		}
 		notes = append(notes, fmt.Sprintf("job %d: send to %s was interrupted by a restart; marked failed and paused the job", s.jobID, s.jid))
 	}
-	return notes, nil
+	return len(all), notes, nil
+}
+
+func (d *sendJobDB) savePacer(p sendPacer) error {
+	_, err := d.db.Exec(`UPDATE send_pacer SET next_send_at = ?, last_send_at = ?, sends_since_break = ?, on_break = ? WHERE id = 1`,
+		toMillis(p.NextSendAt), toMillis(p.LastSendAt), p.SendsSinceBreak, boolInt(p.OnBreak))
+	return err
 }
 
 func (d *sendJobDB) pause(id int64, now time.Time) (sendJob, error) {
@@ -907,6 +942,11 @@ func (d *sendJobDB) resume(id int64, retryFailed bool, now time.Time) (sendJob, 
 			}
 			return sendJobConflict{msg}
 		}
+		if !j.DryRun {
+			if err := checkResumeOverlap(tx, j, retryFailed); err != nil {
+				return err
+			}
+		}
 		if retryFailed {
 			res, err := tx.Exec(`UPDATE send_job_recipients SET status = ? WHERE job_id = ? AND status = ?`,
 				recipientPending, id, recipientFailed)
@@ -939,6 +979,53 @@ func (d *sendJobDB) resume(id int64, retryFailed bool, now time.Time) (sendJob, 
 		return err
 	})
 	return out, retried, err
+}
+
+// checkResumeOverlap refuses a resume that would message someone a second
+// time: a recipient this job would still send to (pending, or failed when
+// retrying) who is in another unfinished real job, or whom a newer real job has
+// already sent to. Older finished jobs are not counted: a job created after
+// them was allowed to include the same people.
+func checkResumeOverlap(tx *sql.Tx, j sendJob, retryFailed bool) error {
+	statuses := []any{recipientPending}
+	if retryFailed {
+		statuses = append(statuses, recipientFailed)
+	}
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(statuses)), ",")
+	args := []any{j.ID, j.ID}
+	args = append(args, statuses...)
+	args = append(args, jobRunning, jobPaused, j.ID, recipientSent, recipientSending)
+	rows, err := tx.Query(`SELECT r.jid, r.job_id, r.status FROM send_job_recipients r JOIN send_jobs o ON o.id = r.job_id
+		WHERE r.job_id <> ? AND o.dry_run = 0
+		  AND r.jid IN (SELECT jid FROM send_job_recipients WHERE job_id = ? AND status IN (`+marks+`))
+		  AND (o.status IN (?, ?) OR (o.id > ? AND r.status IN (?, ?)))
+		ORDER BY r.job_id, r.position`, args...)
+	if err != nil {
+		return err
+	}
+	var hits []string
+	for rows.Next() {
+		var jid, status string
+		var other int64
+		if err := rows.Scan(&jid, &other, &status); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		hits = append(hits, fmt.Sprintf("%s (%s in job %d)", jid, status, other))
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(hits) == 0 {
+		return nil
+	}
+	hint := "cancel or finish the other job first"
+	if retryFailed {
+		hint = "resume without retry_failed to leave them out, or " + hint
+	}
+	return sendJobConflict{fmt.Sprintf("resuming job %d would message %d recipient(s) a second time: %s; %s",
+		j.ID, len(hits), strings.Join(hits, ", "), hint)}
 }
 
 func (d *sendJobDB) cancel(id int64, now time.Time) (sendJob, error) {
@@ -999,8 +1086,9 @@ type sendJobService struct {
 	send func(ctx context.Context, jid, text string) error
 	// connected reports whether WhatsApp is reachable; sends wait while it is not.
 	connected func() bool
-	// lidToPN resolves an @lid JID to the phone JID (empty when unknown).
+	// lidToPN and pnToLID map between @lid and phone JIDs (empty when unknown).
 	lidToPN func(ctx context.Context, lid types.JID) types.JID
+	pnToLID func(ctx context.Context, pn types.JID) types.JID
 	// wasSent checks messages.db during crash recovery (may be nil).
 	wasSent func(jid, text string, since time.Time) (time.Time, bool)
 	now     func() time.Time
@@ -1042,12 +1130,28 @@ func newSendJobService(db *sendJobDB, settings sendJobSettings) *sendJobService 
 
 // start settles sends interrupted by the last shutdown, then runs the worker.
 func (s *sendJobService) start() error {
-	notes, err := s.db.recoverInterrupted(s.now(), s.wasSent)
+	now := s.now()
+	settled, notes, err := s.db.recoverInterrupted(now, s.wasSent)
 	for _, n := range notes {
 		s.logf("%s", n)
 	}
 	if err != nil {
 		return fmt.Errorf("recover interrupted sends: %w", err)
+	}
+	// An interrupted send may well have gone out, but its finish() never ran,
+	// so the pacer does not know about it. Count it now, or the next message
+	// would follow it with no gap.
+	if settled > 0 {
+		p, err := s.db.pacer()
+		if err != nil {
+			return err
+		}
+		for i := 0; i < settled; i++ {
+			p = p.advance(now, s.settings, s.rand)
+		}
+		if err := s.db.savePacer(p); err != nil {
+			return fmt.Errorf("pace after recovery: %w", err)
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
@@ -1131,8 +1235,19 @@ func (s *sendJobService) step(ctx context.Context) (time.Duration, error) {
 	if err != nil {
 		return 0, err
 	}
+	if limit := s.settings.longestGap(); p.NextSendAt.Sub(now) > limit {
+		// The clock went back (or the settings got shorter): never wait longer
+		// than one full gap from now.
+		p.NextSendAt = now.Add(limit)
+		if err := s.db.savePacer(p); err != nil {
+			return 0, err
+		}
+	}
 	if p.NextSendAt.After(now) {
 		return p.NextSendAt.Sub(now), nil
+	}
+	if ctx.Err() != nil {
+		return 0, nil // shutting down: start no new send
 	}
 	if !w.DryRun && !s.connected() {
 		s.setWaitingForWA(true)
@@ -1315,7 +1430,7 @@ func (s *sendJobService) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Label = strings.TrimSpace(req.Label)
-	recips, dups, problems := prepareSendJob(r.Context(), req, s.settings.MaxRecipients, s.lidToPN)
+	recips, dups, problems := prepareSendJob(r.Context(), req, s.settings.MaxRecipients, s.lidToPN, s.pnToLID)
 	if len(problems) > 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"success": false,
@@ -1515,9 +1630,15 @@ func startSendJobs(client *whatsmeow.Client, messageStore *MessageStore, logger 
 	for _, w := range warnings {
 		log.Warnf("%s", w)
 	}
+	lock, err := lockSendJobStore(sendJobsDBPath + ".lock")
+	if err != nil {
+		log.Errorf("send jobs disabled: %v", err)
+		return func() {}
+	}
 	db, err := openSendJobDB("file:" + sendJobsDBPath + "?_foreign_keys=on&_busy_timeout=5000")
 	if err != nil {
 		log.Errorf("send jobs disabled: %v", err)
+		_ = lock.Close()
 		return func() {}
 	}
 	svc := newSendJobService(db, settings)
@@ -1539,10 +1660,32 @@ func startSendJobs(client *whatsmeow.Client, messageStore *MessageStore, logger 
 		}
 		return pn
 	}
-	svc.wasSent = messageStore.outgoingTextSince
+	svc.pnToLID = func(ctx context.Context, pn types.JID) types.JID {
+		if client.Store == nil || client.Store.LIDs == nil {
+			return types.EmptyJID
+		}
+		lid, err := client.Store.LIDs.GetLIDForPN(ctx, pn)
+		if err != nil {
+			return types.EmptyJID
+		}
+		return lid
+	}
+	svc.wasSent = func(jid, text string, since time.Time) (time.Time, bool) {
+		if at, ok := messageStore.outgoingTextSince(jid, text, since); ok {
+			return at, true
+		}
+		// sendWhatsAppMessage stores under the phone JID once it is known.
+		if parsed, err := types.ParseJID(jid); err == nil && parsed.Server == types.HiddenUserServer {
+			if pn := svc.lidToPN(context.Background(), parsed); !pn.IsEmpty() {
+				return messageStore.outgoingTextSince(pn.ToNonAD().String(), text, since)
+			}
+		}
+		return time.Time{}, false
+	}
 	if err := svc.start(); err != nil {
 		log.Errorf("send jobs disabled: %v", err)
 		_ = db.Close()
+		_ = lock.Close()
 		return func() {}
 	}
 	activeSendJobs = svc
@@ -1551,5 +1694,22 @@ func startSendJobs(client *whatsmeow.Client, messageStore *MessageStore, logger 
 	return func() {
 		svc.stop(10 * time.Second)
 		_ = db.Close()
+		_ = lock.Close()
 	}
+}
+
+// lockSendJobStore takes an exclusive lock so only one bridge process (say the
+// daemon, not also a `go run .` in a terminal) runs send jobs on this store.
+// Two workers would each pace on their own and settle each other's in-flight
+// sends as interrupted.
+func lockSendJobStore(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("another bridge process is already running send jobs on %s (%v)", path, err)
+	}
+	return f, nil
 }

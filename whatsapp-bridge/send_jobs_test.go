@@ -314,7 +314,7 @@ func TestPrepareSendJobDedupesAcrossFormatsAndRendersNames(t *testing.T) {
 			{Recipient: "447700900003:12@s.whatsapp.net", Name: "Cleo"},
 		},
 	}
-	recips, dups, problems := prepareSendJob(context.Background(), req, 100, lidToPN)
+	recips, dups, problems := prepareSendJob(context.Background(), req, 100, lidToPN, nil)
 	if len(problems) != 0 {
 		t.Fatalf("problems: %v", problems)
 	}
@@ -352,7 +352,7 @@ func TestPrepareSendJobRejectsBadInput(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, _, problems := prepareSendJob(context.Background(), c.req, 100, nil)
+			_, _, problems := prepareSendJob(context.Background(), c.req, 100, nil, nil)
 			if !strings.Contains(strings.Join(problems, "; "), c.want) {
 				t.Fatalf("want a problem mentioning %q, got %v", c.want, problems)
 			}
@@ -363,7 +363,7 @@ func TestPrepareSendJobRejectsBadInput(t *testing.T) {
 func TestPrepareSendJobCountsCeilingAfterDedupe(t *testing.T) {
 	recips := people(100)
 	recips = append(recips, recips[0], recips[1]) // 102 entries, 100 people
-	_, dups, problems := prepareSendJob(context.Background(), sendJobCreateRequest{Template: "Hi {name}", Recipients: recips}, 100, nil)
+	_, dups, problems := prepareSendJob(context.Background(), sendJobCreateRequest{Template: "Hi {name}", Recipients: recips}, 100, nil, nil)
 	if len(problems) != 0 || len(dups) != 2 {
 		t.Fatalf("problems %v, dups %d", problems, len(dups))
 	}
@@ -373,7 +373,7 @@ func TestPrepareSendJobReportsEveryBadEntry(t *testing.T) {
 	req := sendJobCreateRequest{Template: "Hi", Recipients: []sendJobRecipientInput{
 		{Recipient: "bob"}, {Recipient: "447700900001"}, {Recipient: "123@g.us"},
 	}}
-	_, _, problems := prepareSendJob(context.Background(), req, 100, nil)
+	_, _, problems := prepareSendJob(context.Background(), req, 100, nil, nil)
 	if len(problems) != 2 || !strings.Contains(problems[0], "recipient 1") || !strings.Contains(problems[1], "recipient 3") {
 		t.Fatalf("problems %v", problems)
 	}
@@ -383,7 +383,7 @@ func TestPrepareSendJobReportsEveryBadEntry(t *testing.T) {
 
 func TestSentRecipientCanNeverChangeStatus(t *testing.T) {
 	h := newSendJobHarness(t, "", instantSettings(), nil, false)
-	recips, _, _ := prepareSendJob(context.Background(), sendJobCreateRequest{Template: "Hi", Recipients: people(1)}, 100, nil)
+	recips, _, _ := prepareSendJob(context.Background(), sendJobCreateRequest{Template: "Hi", Recipients: people(1)}, 100, nil, nil)
 	id, _, err := h.db.createJob("", "Hi", false, recips, time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -401,7 +401,7 @@ func TestSentRecipientCanNeverChangeStatus(t *testing.T) {
 
 func TestSendingRecipientCannotGoBackToPending(t *testing.T) {
 	h := newSendJobHarness(t, "", instantSettings(), nil, false)
-	recips, _, _ := prepareSendJob(context.Background(), sendJobCreateRequest{Template: "Hi", Recipients: people(1)}, 100, nil)
+	recips, _, _ := prepareSendJob(context.Background(), sendJobCreateRequest{Template: "Hi", Recipients: people(1)}, 100, nil, nil)
 	id, _, _ := h.db.createJob("", "Hi", false, recips, time.Now())
 	if _, err := h.db.db.Exec(`UPDATE send_job_recipients SET status = 'sending' WHERE job_id = ?`, id); err != nil {
 		t.Fatal(err)
@@ -560,7 +560,7 @@ func TestRestartNeverResendsAndSettlesInterruptedSend(t *testing.T) {
 
 	// Simulate a crash mid-send in a second job: claim a recipient, then "die".
 	db := openTestSendJobDB(t, path)
-	recips, _, _ := prepareSendJob(context.Background(), sendJobCreateRequest{Template: "Yo {name}", Recipients: people(3)}, 100, nil)
+	recips, _, _ := prepareSendJob(context.Background(), sendJobCreateRequest{Template: "Yo {name}", Recipients: people(3)}, 100, nil, nil)
 	id2, _, err := db.createJob("", "Yo {name}", false, recips, time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -604,7 +604,7 @@ func TestRestartNeverResendsAndSettlesInterruptedSend(t *testing.T) {
 func TestRecoveryMarksSentWhenMessageStoreHasIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "send_jobs.db")
 	db := openTestSendJobDB(t, path)
-	recips, _, _ := prepareSendJob(context.Background(), sendJobCreateRequest{Template: "Hi {name}", Recipients: people(2)}, 100, nil)
+	recips, _, _ := prepareSendJob(context.Background(), sendJobCreateRequest{Template: "Hi {name}", Recipients: people(2)}, 100, nil, nil)
 	id, _, _ := db.createJob("", "Hi {name}", false, recips, time.Now())
 	w, _, _ := db.nextWork(time.Now())
 	claimedAt := time.Now()
@@ -895,5 +895,180 @@ func TestSendJobRoutesRequireTheBridgeToken(t *testing.T) {
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("with token: want 503, got %d", w.Code)
+	}
+}
+
+// --- Regression tests from review ---------------------------------------------------
+
+// A send interrupted by a restart may have gone out; the pacer must count it so
+// the next person is not messaged straight after.
+func TestRecoveryAdvancesThePacer(t *testing.T) {
+	for _, inMessageStore := range []bool{true, false} {
+		t.Run(fmt.Sprintf("found_in_messages_db=%v", inMessageStore), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "send_jobs.db")
+			db := openTestSendJobDB(t, path)
+			recips, _, _ := prepareSendJob(context.Background(), sendJobCreateRequest{Template: "Hi {name}", Recipients: people(2)}, 100, nil, nil)
+			id, _, _ := db.createJob("", "Hi {name}", false, recips, time.Now())
+			w, _, _ := db.nextWork(time.Now())
+			if ok, err := db.claim(w, time.Now()); !ok || err != nil {
+				t.Fatalf("claim %v %v", ok, err)
+			}
+			_ = db.Close()
+
+			ms := newTestMessageStore(t)
+			if inMessageStore {
+				_ = ms.StoreChat(w.JID, "", time.Now())
+				_ = ms.StoreMessage("3EB0BBBB", w.JID, "me", w.Message, time.Now(), true, "", "", "", nil, nil, nil, 0, "")
+			}
+			s := instantSettings()
+			s.MinDelay, s.MaxDelay = time.Hour, time.Hour
+			h := newSendJobHarness(t, path, s, &fakeSender{}, false)
+			h.svc.wasSent = ms.outgoingTextSince
+			if err := h.svc.start(); err != nil {
+				t.Fatal(err)
+			}
+			if !inMessageStore {
+				h.waitStatus(id, jobPaused)
+				h.do(http.MethodPost, fmt.Sprintf("/api/send-jobs/%d/resume", id), nil)
+			}
+			time.Sleep(100 * time.Millisecond)
+			if calls := h.sender.sent(); len(calls) != 0 {
+				t.Fatalf("next recipient sent with no gap after recovery: %v", calls)
+			}
+			p, _ := h.db.pacer()
+			if gap := time.Until(p.NextSendAt); gap < 59*time.Minute {
+				t.Fatalf("pacer not advanced: next send in %s", gap)
+			}
+		})
+	}
+}
+
+// Resuming a finished job with retry_failed must not message someone a newer job already reached.
+func TestResumeRetryRefusesPeopleANewerJobSent(t *testing.T) {
+	x := pn("447700900001")
+	sender := &fakeSender{fail: map[string]error{x: errors.New("boom")}}
+	h := newSendJobHarness(t, "", instantSettings(), sender, true)
+	a := h.create(sendJobCreateRequest{Template: "A", Recipients: people(1)})
+	h.waitStatus(a, jobPaused)
+	h.do(http.MethodPost, fmt.Sprintf("/api/send-jobs/%d/resume", a), nil) // no retry: A completes with X failed
+	h.waitStatus(a, jobCompleted)
+
+	sender.setFail(x, nil)
+	b := h.create(sendJobCreateRequest{Template: "B", Recipients: people(1)}) // allowed: A is finished
+	h.waitStatus(b, jobCompleted)
+
+	code, out := h.do(http.MethodPost, fmt.Sprintf("/api/send-jobs/%d/resume", a), map[string]any{"retry_failed": true})
+	if code != http.StatusConflict || !strings.Contains(out["message"].(string), fmt.Sprintf("sent in job %d", b)) {
+		t.Fatalf("resume retry: %d %v", code, out)
+	}
+	if st := h.job(a); st.Status != jobCompleted || st.Counts.Failed != 1 {
+		t.Fatalf("refused resume changed job A: %+v", st)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if calls := sender.sent(); len(calls) != 2 { // A's failed attempt and B's send
+		t.Fatalf("calls %v", calls)
+	}
+}
+
+func TestResumeRetryAllowedWhenOnlyOlderJobsSent(t *testing.T) {
+	x := pn("447700900001")
+	sender := &fakeSender{}
+	h := newSendJobHarness(t, "", instantSettings(), sender, true)
+	older := h.create(sendJobCreateRequest{Template: "Old", Recipients: people(1)})
+	h.waitStatus(older, jobCompleted)
+	sender.setFail(x, errors.New("boom"))
+	newer := h.create(sendJobCreateRequest{Template: "New", Recipients: people(1)})
+	h.waitStatus(newer, jobPaused)
+	sender.setFail(x, nil)
+	code, out := h.do(http.MethodPost, fmt.Sprintf("/api/send-jobs/%d/resume", newer), map[string]any{"retry_failed": true})
+	if code != http.StatusOK {
+		t.Fatalf("resume retry: %d %v", code, out)
+	}
+	h.waitStatus(newer, jobCompleted)
+}
+
+func TestSendJobStoreLockIsExclusive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "send_jobs.db.lock")
+	first, err := lockSendJobStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second, err := lockSendJobStore(path); err == nil {
+		_ = second.Close()
+		t.Fatal("a second process could take the send job lock")
+	}
+	_ = first.Close()
+	again, err := lockSendJobStore(path)
+	if err != nil {
+		t.Fatalf("lock not released: %v", err)
+	}
+	_ = again.Close()
+}
+
+func TestPrepareSendJobDedupesPhoneAgainstUnmappedLID(t *testing.T) {
+	phone := types.NewJID("447700900001", types.DefaultUserServer)
+	lid := types.NewJID("184125298348272", types.HiddenUserServer)
+	pnToLID := func(_ context.Context, j types.JID) types.JID {
+		if j == phone {
+			return lid
+		}
+		return types.EmptyJID
+	}
+	req := sendJobCreateRequest{Template: "Hi", Recipients: []sendJobRecipientInput{
+		{Recipient: "184125298348272@lid"}, {Recipient: "447700900001"},
+	}}
+	recips, dups, problems := prepareSendJob(context.Background(), req, 100, nil, pnToLID)
+	if len(problems) != 0 || len(recips) != 1 || len(dups) != 1 || dups[0].DuplicateOf != "184125298348272@lid" {
+		t.Fatalf("recips %v dups %v problems %v", recips, dups, problems)
+	}
+}
+
+func TestPacerFarInTheFutureIsClamped(t *testing.T) {
+	s := instantSettings()
+	s.MinDelay, s.MaxDelay = time.Hour, time.Hour
+	h := newSendJobHarness(t, "", s, nil, false)
+	if err := h.db.savePacer(sendPacer{NextSendAt: time.Now().Add(30 * 24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	h.create(sendJobCreateRequest{Template: "Hi", Recipients: people(1)})
+	wait, err := h.svc.step(context.Background())
+	if err != nil || wait > time.Hour || wait < 59*time.Minute {
+		t.Fatalf("wait %s, err %v", wait, err)
+	}
+}
+
+func TestNoNewSendAfterShutdownStarts(t *testing.T) {
+	h := newSendJobHarness(t, "", instantSettings(), nil, false)
+	id := h.create(sendJobCreateRequest{Template: "Hi", Recipients: people(1)})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := h.svc.step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if j := h.job(id); j.Counts.Pending != 1 || len(h.sender.sent()) != 0 {
+		t.Fatalf("sent during shutdown: %+v", j.Counts)
+	}
+}
+
+func TestSettingsRejectHugeDurations(t *testing.T) {
+	t.Setenv("WHATSAPP_SEND_JOB_MIN_DELAY_S", "")
+	t.Setenv("WHATSAPP_SEND_JOB_MAX_DELAY_S", "9300000000")
+	s, warnings := loadSendJobSettings()
+	if s.MaxDelay != 90*time.Second || len(warnings) != 1 {
+		t.Fatalf("settings %+v warnings %v", s, warnings)
+	}
+}
+
+func TestFailureWhilePausedByRequestShowsTheFailure(t *testing.T) {
+	x := pn("447700900001")
+	sender := &fakeSender{gate: make(chan struct{}), fail: map[string]error{x: errors.New("server said no")}}
+	h := newSendJobHarness(t, "", instantSettings(), sender, true)
+	id := h.create(sendJobCreateRequest{Template: "Hi", Recipients: people(2)})
+	waitFor(t, "send in flight", func() bool { return h.job(id).Counts.Sending == 1 })
+	h.do(http.MethodPost, fmt.Sprintf("/api/send-jobs/%d/pause", id), nil)
+	sender.gate <- struct{}{}
+	waitFor(t, "failure recorded", func() bool { return h.job(id).Counts.Failed == 1 })
+	if j := h.job(id); j.Status != jobPaused || !strings.Contains(j.PauseReason, "server said no") {
+		t.Fatalf("job %+v", j)
 	}
 }

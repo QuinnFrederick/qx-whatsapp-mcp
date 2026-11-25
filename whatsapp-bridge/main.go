@@ -3107,6 +3107,11 @@ connectionSuccess:
 
 	fmt.Println("REST server is running. Press Ctrl+C to disconnect and exit.")
 
+	// The reconnect loop stops on its own channel: a second receiver on
+	// exitChan could swallow the one SIGTERM, leaving main waiting until
+	// launchd's SIGKILL and skipping the shutdown below.
+	stopReconnect := make(chan struct{})
+
 	// Start reconnection handler goroutine
 	go func() {
 		reconnectBackoff := time.Second * 5
@@ -3145,7 +3150,7 @@ connectionSuccess:
 					reconnectBackoff = time.Second * 5
 				}
 
-			case <-exitChan:
+			case <-stopReconnect:
 				return
 			}
 		}
@@ -3153,6 +3158,7 @@ connectionSuccess:
 
 	// Wait for termination signal
 	<-exitChan
+	close(stopReconnect)
 
 	fmt.Println("Disconnecting...")
 	// Let a send-job message that is already going out finish first.

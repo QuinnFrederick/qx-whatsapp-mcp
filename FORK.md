@@ -8,7 +8,7 @@ Everything lives in new files so the diff against upstream stays small:
 | Component | File | Upstream touch |
 |---|---|---|
 | Bridge endpoints | `whatsapp-bridge/groups.go`, `communities.go`, `group_picture.go` (+ `_test.go`, `testdata/`) | one `registerGroupRoutes(...)` line in `main.go` (it registers the community and picture routes too, and passes the media roots) |
-| Slow-send jobs | `whatsapp-bridge/send_jobs.go` (+ `send_jobs_test.go`) | one `registerSendJobRoutes(...)` line in `newRESTMux`, plus starting the runner before the REST server and stopping it before `client.Disconnect()` in `main()` |
+| Slow-send jobs | `whatsapp-bridge/send_jobs.go` (+ `send_jobs_test.go`) | one `registerSendJobRoutes(...)` line in `newRESTMux`, plus starting the runner before the REST server and stopping it before `client.Disconnect()` in `main()`; the reconnect loop now stops on its own channel so it can no longer swallow the SIGTERM meant for `main()` |
 | Bridge dependency | `golang.org/x/image` (Go team) | WebP decoding and image scaling for group pictures; v0.45.0 is the newest that builds with Go 1.25 |
 | MCP tools | `whatsapp-mcp-server/main.py`, `whatsapp.py` (appended section) | tool definitions and bridge client functions |
 | Tests | `whatsapp-mcp-server/tests/test_groups.py`, `test_send_jobs.py` | + five rows in `test_bridge_auth.py` |
@@ -65,7 +65,9 @@ How it behaves:
   device suffixes, and an `@lid` the bridge can map to a phone number all count as the same
   person). Each one is claimed (`pending` → `sending`) in SQLite *before* the send and
   marked `sent`/`failed` after; a trigger makes `sent` final. A real job is refused if any
-  of its people are in another unfinished (running or paused) real job.
+  of its people are in another unfinished (running or paused) real job, and a resume is
+  refused (`409`) if it would message someone who is in another unfinished real job or
+  whom a newer real job has already sent to.
 - **Ceiling**: more than `WHATSAPP_SEND_JOB_MAX_RECIPIENTS` (100) unique recipients is
   rejected, never truncated.
 - **Halt on failure**: a failed send marks that recipient `failed` and pauses the job with
@@ -74,7 +76,12 @@ How it behaves:
 - **Restarts never re-send.** A recipient still `sending` at startup (the bridge stopped
   mid-send) becomes `sent` if `messages.db` holds that exact outgoing text from around the
   attempt, otherwise `failed` with an "unknown delivery, check the chat" error, and its job
-  is paused. Nothing is retried automatically.
+  is paused. Nothing is retried automatically, and the pacer counts the interrupted send so
+  the next message still waits a full gap. On SIGTERM the bridge lets a send in progress
+  finish before disconnecting.
+- **One runner per store.** The bridge takes an exclusive lock on `store/send_jobs.db.lock`;
+  a second bridge process on the same store (say `go run .` while the daemon runs) logs
+  that send jobs are disabled and its `/api/send-jobs` routes answer `503`.
 - **Dry runs**: `dry_run=True` per job, or `WHATSAPP_SEND_JOB_DRY_RUN=true` to force every
   new job to be a dry run. The flag is fixed when a job is created, so switching the env var
   later never turns a dry job real (or marks real recipients as sent without sending).

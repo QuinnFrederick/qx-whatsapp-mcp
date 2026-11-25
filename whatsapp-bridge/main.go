@@ -2277,6 +2277,9 @@ func newRESTMux(client *whatsmeow.Client, messageStore *MessageStore, port int, 
 	// Group management + profile pictures (fork addition, see groups.go)
 	registerGroupRoutes(mux, client, auth, allowedMediaRoots)
 
+	// Slow-send jobs (fork addition, see send_jobs.go)
+	registerSendJobRoutes(mux, auth, activeSendJobs)
+
 	// Health check endpoint
 	mux.HandleFunc("/api/health", auth(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -3092,6 +3095,10 @@ connectionSuccess:
 	}
 	logger.Infof("Allowed media roots: %v", allowedMediaRoots)
 
+	// Slow-send jobs (fork addition, see send_jobs.go). Started before the REST
+	// server so its routes are live from the first request.
+	stopSendJobs := startSendJobs(client, messageStore, logger)
+
 	startRESTServer(client, messageStore, port, bridgeToken, allowedMediaRoots)
 
 	// Create a channel to keep the main goroutine alive
@@ -3148,6 +3155,8 @@ connectionSuccess:
 	<-exitChan
 
 	fmt.Println("Disconnecting...")
+	// Let a send-job message that is already going out finish first.
+	stopSendJobs()
 	// Disconnect client
 	client.Disconnect()
 }

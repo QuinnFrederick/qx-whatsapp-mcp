@@ -93,6 +93,8 @@ def test_send_message_without_token_surfaces_bridge_401(monkeypatch, tmp_path):
             ("120363000000000100@g.us", ["120363000000000101@g.us"], "link"),
             "/community/groups",
         ),
+        ("start_send_job", (["12025551234"], "hello"), "/send-jobs"),
+        ("resume_send_job", (7,), "/send-jobs/7/resume"),
     ],
 )
 def test_bridge_post_helpers_include_auth_headers(monkeypatch, tmp_path, func_name, args, expected_suffix):

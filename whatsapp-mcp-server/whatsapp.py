@@ -1752,3 +1752,124 @@ def resolve_contacts(
                     m["avatar_url"] = None
         results.append({"query": query, "status": status, "matches": shown, "total_matches": total})
     return results
+
+
+# --- Slow-send jobs ----------------------------------------------------------
+# Bridge endpoints in whatsapp-bridge/send_jobs.go. The bridge runs the jobs, so
+# they keep going (and survive restarts) whatever happens to this MCP session.
+
+SEND_JOB_STATUSES = ("running", "paused", "completed", "cancelled")
+SEND_JOB_RECIPIENT_STATUSES = ("pending", "sending", "sent", "failed")
+# Keys LLM clients use for a recipient's address, in order of preference.
+_SEND_JOB_ADDRESS_KEYS = ("recipient", "jid", "phone", "phone_number", "number")
+
+
+def _normalize_send_job_recipients(recipients: Any) -> tuple[list[dict[str, str]], str | None]:
+    """Turn the caller's recipients into the bridge's [{"recipient", "name"?}] shape.
+
+    Accepts objects with "recipient" (or "jid"/"phone"/"phone_number"/"number") plus an
+    optional "name", or bare JID/phone strings. Returns (recipients, error_message).
+    """
+    if recipients is None:
+        return [], "At least one recipient must be provided"
+    if isinstance(recipients, (str, dict)):
+        recipients = [recipients]
+    out: list[dict[str, str]] = []
+    for i, entry in enumerate(recipients, 1):
+        if isinstance(entry, str):
+            address, name = entry.strip(), ""
+        elif isinstance(entry, dict):
+            address = next((str(entry[k]).strip() for k in _SEND_JOB_ADDRESS_KEYS if entry.get(k)), "")
+            name = str(entry.get("name") or "").strip()
+        else:
+            return [], f"Recipient {i} must be a JID or phone string, or an object with 'recipient' and 'name'"
+        if not address:
+            return [], f"Recipient {i} has no 'recipient' (a JID or a phone number with country code)"
+        item = {"recipient": address}
+        if name:
+            item["name"] = name
+        out.append(item)
+    if not out:
+        return [], "At least one recipient must be provided"
+    return out, None
+
+
+def _send_job_id(job_id: Any) -> int | None:
+    if isinstance(job_id, bool):
+        return None
+    try:
+        value = int(str(job_id).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def start_send_job(
+    recipients: Any,
+    message_template: str,
+    label: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create a slow-send job on the bridge via POST /api/send-jobs."""
+    cleaned, error = _normalize_send_job_recipients(recipients)
+    if error:
+        return _failure(error)
+    if not (message_template or "").strip():
+        return _failure("message_template must be provided")
+    payload: dict[str, Any] = {"recipients": cleaned, "template": message_template}
+    if label and label.strip():
+        payload["label"] = label.strip()
+    if dry_run:
+        payload["dry_run"] = True
+    return _bridge_post("/send-jobs", payload)
+
+
+def get_send_job(job_id: Any, recipient_status: str | None = None, timeout: float = 15) -> dict[str, Any]:
+    """Fetch one job with its recipients via GET /api/send-jobs/{id}."""
+    jid = _send_job_id(job_id)
+    if jid is None:
+        return _failure("job_id must be a positive whole number")
+    params: dict[str, str] = {}
+    if recipient_status:
+        status = recipient_status.strip().lower()
+        if status not in SEND_JOB_RECIPIENT_STATUSES:
+            return _failure("recipient_status must be one of: " + ", ".join(SEND_JOB_RECIPIENT_STATUSES))
+        params["recipient_status"] = status
+    return _bridge_get(f"/send-jobs/{jid}", params, timeout)
+
+
+def list_send_jobs(status: str | None = None, limit: int = 20, timeout: float = 15) -> dict[str, Any]:
+    """List jobs, newest first, via GET /api/send-jobs."""
+    params: dict[str, str] = {}
+    if status:
+        clean = status.strip().lower()
+        if clean == "queued":  # queued jobs are stored as running
+            clean = "running"
+        if clean not in SEND_JOB_STATUSES:
+            return _failure("status must be one of: " + ", ".join(SEND_JOB_STATUSES))
+        params["status"] = clean
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        return _failure("limit must be a whole number between 1 and 200")
+    params["limit"] = str(max(1, min(limit, 200)))
+    return _bridge_get("/send-jobs", params, timeout)
+
+
+def _send_job_action(job_id: Any, action: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    jid = _send_job_id(job_id)
+    if jid is None:
+        return _failure("job_id must be a positive whole number")
+    return _bridge_post(f"/send-jobs/{jid}/{action}", payload or {})
+
+
+def pause_send_job(job_id: Any) -> dict[str, Any]:
+    return _send_job_action(job_id, "pause")
+
+
+def resume_send_job(job_id: Any, retry_failed: bool = False) -> dict[str, Any]:
+    return _send_job_action(job_id, "resume", {"retry_failed": bool(retry_failed)})
+
+
+def cancel_send_job(job_id: Any) -> dict[str, Any]:
+    return _send_job_action(job_id, "cancel")

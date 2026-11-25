@@ -1,15 +1,17 @@
 # Fork additions
 
 **qx-whatsapp-mcp** is a fork of [`verygoodplugins/whatsapp-mcp`](https://github.com/verygoodplugins/whatsapp-mcp)
-that adds WhatsApp **group management**, **communities** and **profile pictures**. Everything
-lives in new files so the diff against upstream stays small:
+that adds WhatsApp **group management**, **communities**, **profile pictures** and
+**slow-send jobs** (one personal message to each of many people, paced like a human).
+Everything lives in new files so the diff against upstream stays small:
 
 | Component | File | Upstream touch |
 |---|---|---|
 | Bridge endpoints | `whatsapp-bridge/groups.go`, `communities.go`, `group_picture.go` (+ `_test.go`, `testdata/`) | one `registerGroupRoutes(...)` line in `main.go` (it registers the community and picture routes too, and passes the media roots) |
+| Slow-send jobs | `whatsapp-bridge/send_jobs.go` (+ `send_jobs_test.go`) | one `registerSendJobRoutes(...)` line in `newRESTMux`, plus starting the runner before the REST server and stopping it before `client.Disconnect()` in `main()` |
 | Bridge dependency | `golang.org/x/image` (Go team) | WebP decoding and image scaling for group pictures; v0.45.0 is the newest that builds with Go 1.25 |
 | MCP tools | `whatsapp-mcp-server/main.py`, `whatsapp.py` (appended section) | tool definitions and bridge client functions |
-| Tests | `whatsapp-mcp-server/tests/test_groups.py` | + three rows in `test_bridge_auth.py` |
+| Tests | `whatsapp-mcp-server/tests/test_groups.py`, `test_send_jobs.py` | + five rows in `test_bridge_auth.py` |
 
 The typical flow for an assistant: the user names people → `resolve_contacts` → ask about
 any ambiguous names (showing `avatar_url` thumbnails) → `create_group` with the chosen JIDs.
@@ -35,6 +37,49 @@ country code in any formatting (`+1 (202) 555-1234`). Group names are limited to
 characters by WhatsApp, counted in code points, so an emoji built from several code points
 (❤️‍🔥 is four) counts as that many. Names are passed through byte-for-byte: only leading
 and trailing whitespace is trimmed, and zero-width joiners and variation selectors are kept.
+
+### Slow-send jobs
+
+| Tool | What it does |
+|---|---|
+| `start_send_job(recipients, message_template, label=None, dry_run=False)` | Creates a job that messages each recipient once, in the background. `recipients` is a list of `{"recipient": <JID or phone>, "name": <name>}` (bare strings are fine without `{name}`). `{name}` in the template is replaced per person; any other `{placeholder}` is rejected. Returns the job plus `duplicates_removed`. `dry_run=True` paces and records progress but sends nothing. |
+| `get_send_job(job_id, recipient_status=None)` | Status, counts and every recipient's `status` (`pending` / `sending` / `sent` / `failed`) with `attempts`, `last_attempt_at`, `sent_at` and `error`. For the running job: `waiting_for`, `next_send_at`, `estimated_remaining_seconds`. |
+| `list_send_jobs(status=None, limit=20)` | Newest first, without recipients, plus the bridge's pacing settings. |
+| `pause_send_job(job_id)` | Stops sending until resumed (a send already in flight completes). |
+| `resume_send_job(job_id, retry_failed=False)` | Continues with pending recipients only; `retry_failed=True` also retries failed ones, once each (works on a completed job with failures too). |
+| `cancel_send_job(job_id)` | Ends the job for good; pending recipients are never sent. |
+
+How it behaves:
+
+- **Runs in the bridge**, not the MCP server, so a job keeps going when the chat session
+  ends, and every MCP client sees the same jobs. State lives in its own SQLite file,
+  `whatsapp-bridge/store/send_jobs.db` (gitignored with the rest of `store/`).
+- **Pacing** (account-wide, persisted across restarts): a random gap of
+  `WHATSAPP_SEND_JOB_MIN_DELAY_S`–`WHATSAPP_SEND_JOB_MAX_DELAY_S` (45–90 s) between sends,
+  and after every `WHATSAPP_SEND_JOB_BATCH_SIZE` (25) sends a gap of
+  `WHATSAPP_SEND_JOB_BATCH_BREAK_S` (300 s) instead. A quiet spell at least as long as a
+  break counts as one. 60 people take about 75 minutes. There is no daily cap.
+- **One job at a time**, oldest first; a newer job shows as `queued` behind it, so two jobs
+  never double the send rate.
+- **At most once per recipient.** Recipients are de-duplicated on creation (phone formats,
+  device suffixes, and an `@lid` the bridge can map to a phone number all count as the same
+  person). Each one is claimed (`pending` → `sending`) in SQLite *before* the send and
+  marked `sent`/`failed` after; a trigger makes `sent` final. A real job is refused if any
+  of its people are in another unfinished (running or paused) real job.
+- **Ceiling**: more than `WHATSAPP_SEND_JOB_MAX_RECIPIENTS` (100) unique recipients is
+  rejected, never truncated.
+- **Halt on failure**: a failed send marks that recipient `failed` and pauses the job with
+  a `pause_reason`. A disconnected bridge is not a failure: the job waits
+  (`waiting_for: whatsapp_connection`) and carries on once reconnected.
+- **Restarts never re-send.** A recipient still `sending` at startup (the bridge stopped
+  mid-send) becomes `sent` if `messages.db` holds that exact outgoing text from around the
+  attempt, otherwise `failed` with an "unknown delivery, check the chat" error, and its job
+  is paused. Nothing is retried automatically.
+- **Dry runs**: `dry_run=True` per job, or `WHATSAPP_SEND_JOB_DRY_RUN=true` to force every
+  new job to be a dry run. The flag is fixed when a job is created, so switching the env var
+  later never turns a dry job real (or marks real recipients as sent without sending).
+- Messages go through the same path as `send_message` (LID resolution, disappearing-message
+  settings, stored in `messages.db` so they show up in `list_messages`).
 
 ## Bridge REST endpoints
 
@@ -209,6 +254,21 @@ after the create show up in `warnings`.
 
 `action` is `link` or `unlink`; one IQ per group. Response: `{"success": <all ok>, "action",
 "community_jid", "results": [{"jid", "ok", "error"?}]}`.
+
+### Send jobs
+
+| Endpoint | Body / query | Notes |
+|---|---|---|
+| `POST /api/send-jobs` | `{"recipients": [{"recipient": "447700900123", "name": "Alice"}], "template": "Hi {name}…", "label": "…", "dry_run": false}` | `400` with `errors` (one per bad entry) for invalid input, `409` with `overlapping_recipients` when people are already in an unfinished job. |
+| `GET /api/send-jobs` | `?status=running\|paused\|completed\|cancelled&limit=1..200` | Newest first, plus `pacing`. |
+| `GET /api/send-jobs/{id}` | `?recipient_status=pending\|sending\|sent\|failed` | Job with `recipients`, `example_message` and `pacing`. |
+| `POST /api/send-jobs/{id}/pause` | — | Idempotent; `409` for a completed or cancelled job. |
+| `POST /api/send-jobs/{id}/resume` | `{"retry_failed": false}` (body optional) | `409` for a cancelled job, or a completed one with nothing to retry. |
+| `POST /api/send-jobs/{id}/cancel` | — | `409` for a completed job. |
+
+The send-job routes use Go 1.22 method patterns, so a wrong method gets the mux's plain-text
+`405`. If `store/send_jobs.db` cannot be opened, the rest of the bridge runs and these
+routes answer `503`.
 
 ### Group object
 

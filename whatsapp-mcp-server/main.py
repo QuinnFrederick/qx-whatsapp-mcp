@@ -8,6 +8,9 @@ from mcp.server.fastmcp import FastMCP
 from mcp_config import resolve_host, resolve_port, resolve_transport
 from parent_watchdog import install_stdio_parent_watchdog
 from whatsapp import (
+    cancel_send_job as whatsapp_cancel_send_job,
+)
+from whatsapp import (
     create_community as whatsapp_create_community,
 )
 from whatsapp import (
@@ -38,6 +41,9 @@ from whatsapp import (
     get_profile_picture as whatsapp_get_profile_picture,
 )
 from whatsapp import (
+    get_send_job as whatsapp_get_send_job,
+)
+from whatsapp import (
     get_sender_name as whatsapp_get_sender_name,
 )
 from whatsapp import (
@@ -53,13 +59,22 @@ from whatsapp import (
     list_messages as whatsapp_list_messages,
 )
 from whatsapp import (
+    list_send_jobs as whatsapp_list_send_jobs,
+)
+from whatsapp import (
     mark_messages_read as whatsapp_mark_messages_read,
 )
 from whatsapp import (
     msg_to_dict,
 )
 from whatsapp import (
+    pause_send_job as whatsapp_pause_send_job,
+)
+from whatsapp import (
     resolve_contacts as whatsapp_resolve_contacts,
+)
+from whatsapp import (
+    resume_send_job as whatsapp_resume_send_job,
 )
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
@@ -78,6 +93,9 @@ from whatsapp import (
 )
 from whatsapp import (
     set_group_picture as whatsapp_set_group_picture,
+)
+from whatsapp import (
+    start_send_job as whatsapp_start_send_job,
 )
 from whatsapp import (
     update_community_groups as whatsapp_update_community_groups,
@@ -816,6 +834,152 @@ def update_community_groups(community_jid: str, group_jids: list[str], action: s
         jid, ok and, for failures, the error from WhatsApp.
     """
     return whatsapp_update_community_groups(community_jid, group_jids, action)
+
+
+# --- Slow-send jobs (fork addition, see FORK.md) ------------------------------
+
+
+@mcp.tool()
+def start_send_job(
+    recipients: list[dict[str, str] | str],
+    message_template: str,
+    label: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Send one personal WhatsApp message to each of many people, slowly, in the background.
+
+    Use this, not send_message in a loop, for invites or announcements to more than a few
+    people. The bridge sends one message at a time with a random 45-90 second gap and a
+    5 minute break after every 25 sends (the bridge's WHATSAPP_SEND_JOB_* settings), so 60
+    people take about 75 minutes. The job keeps running after this conversation ends and
+    survives bridge restarts; follow it with get_send_job.
+
+    Before calling, resolve names to JIDs with resolve_contacts and get the user's approval
+    of the final recipient list and the exact message: sent messages cannot be recalled.
+    Use dry_run=True to rehearse.
+
+    Rules the bridge enforces:
+    - Each person is messaged at most once per job. The same person given twice (by phone
+      and by JID, or with different formatting) is dropped and listed in duplicates_removed.
+    - At most 100 unique recipients per job; a bigger list is rejected, never truncated.
+    - Anyone already in another unfinished (running or paused) job is refused: resume that
+      job rather than starting a new one, or the same people get the message twice.
+    - If a send fails the job pauses itself; read pause_reason, fix the cause, then call
+      resume_send_job.
+    - Jobs run one at a time. A new job waits with status "queued" behind the running one.
+
+    Args:
+        recipients: The people to message, each {"recipient": <JID such as
+                    "447700900123@s.whatsapp.net" or "...@lid", or a phone number with
+                    country code>, "name": <the name to put in {name}>}. Plain JID/phone
+                    strings are fine when the template has no {name}. People only: group
+                    JIDs are rejected.
+        message_template: The message text. Every "{name}" becomes that recipient's name, and
+                    then every recipient needs a name. No other {placeholders} exist, so write
+                    dates, places and links out in full.
+        label: Optional short label to recognise the job later, e.g. "Birthday invites".
+        dry_run: True runs the whole job with real pacing and progress tracking but sends
+                 nothing to WhatsApp (recipients end up "sent" in a job marked dry_run).
+
+    Returns:
+        success and message, job (id, status, counts, next_send_at,
+        estimated_remaining_seconds, recipients, example_message) and duplicates_removed. On
+        failure nothing was created and message (plus errors, one per bad entry) says what to
+        fix.
+    """
+    return whatsapp_start_send_job(recipients, message_template, label=label, dry_run=dry_run)
+
+
+@mcp.tool()
+def get_send_job(job_id: int, recipient_status: str | None = None) -> dict[str, Any]:
+    """Show a slow-send job's progress: its status, counts and each recipient's status.
+
+    Job status: "running" (sending, or waiting for the next gap), "queued" (waiting for an
+    older job to finish), "paused" (nothing is sent until resume_send_job; pause_reason says
+    why), "completed" (nothing left to send; check counts.failed) or "cancelled".
+
+    Recipient status: "pending" (not sent yet), "sending" (going out right now), "sent"
+    (sent_at says when) or "failed" (error says why; failed recipients are only retried by
+    resume_send_job with retry_failed=True).
+
+    For the running job, waiting_for says what it is waiting on: "pacing_delay",
+    "batch_break", "whatsapp_connection" (the bridge is offline; the job carries on by itself
+    once reconnected), "sending_now" or "ready". next_send_at and estimated_remaining_seconds
+    give the timing.
+
+    Args:
+        job_id: The job's id, from start_send_job or list_send_jobs
+        recipient_status: Only list recipients with this status: "pending", "sending",
+                          "sent" or "failed"
+
+    Returns:
+        success and job, including recipients (position, recipient as given, jid, name,
+        status, attempts, last_attempt_at, sent_at, error), example_message and pacing.
+    """
+    return whatsapp_get_send_job(job_id, recipient_status=recipient_status)
+
+
+@mcp.tool()
+def list_send_jobs(status: str | None = None, limit: int = 20) -> dict[str, Any]:
+    """List slow-send jobs, newest first, with their status and counts.
+
+    Per-recipient detail is left out; use get_send_job for that. Also returns the bridge's
+    current pacing settings.
+
+    Args:
+        status: Only jobs with this status: "running" (includes queued jobs), "paused",
+                "completed" or "cancelled"
+        limit: How many jobs to return, 1-200 (default 20)
+    """
+    return whatsapp_list_send_jobs(status=status, limit=limit)
+
+
+@mcp.tool()
+def pause_send_job(job_id: int) -> dict[str, Any]:
+    """Pause a running or queued slow-send job until resume_send_job is called.
+
+    Nothing more is sent while it is paused. A message that is already going out at that
+    moment still completes. Pausing an already paused job changes nothing.
+
+    Args:
+        job_id: The job's id
+    """
+    return whatsapp_pause_send_job(job_id)
+
+
+@mcp.tool()
+def resume_send_job(job_id: int, retry_failed: bool = False) -> dict[str, Any]:
+    """Resume a paused slow-send job, continuing with the recipients still pending.
+
+    Recipients already sent are never sent again. Pacing picks up where it was, so the next
+    message may still wait out the current gap. Failed recipients stay failed unless
+    retry_failed is True.
+
+    Before retrying, look at why they failed (get_send_job with recipient_status="failed").
+    A failure does not always mean the message was not delivered: if the bridge restarted
+    mid-send the error says so, and that chat should be checked first.
+
+    Args:
+        job_id: The job's id
+        retry_failed: Also try the failed recipients again, once each. Works on a completed
+                      job that has failed recipients too.
+    """
+    return whatsapp_resume_send_job(job_id, retry_failed=retry_failed)
+
+
+@mcp.tool()
+def cancel_send_job(job_id: int) -> dict[str, Any]:
+    """Cancel a slow-send job for good.
+
+    Its pending recipients will never be sent by this job, and a cancelled job cannot be
+    resumed: use pause_send_job if you might want to continue. A message already going out
+    at that moment still completes. If you later start a new job for the same people, leave
+    out those this job already sent to, or they will get the message twice.
+
+    Args:
+        job_id: The job's id
+    """
+    return whatsapp_cancel_send_job(job_id)
 
 
 def shutdown_handler(signum, frame):

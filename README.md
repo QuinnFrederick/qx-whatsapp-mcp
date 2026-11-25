@@ -33,6 +33,7 @@ A Model Context Protocol (MCP) server for WhatsApp, enabling Claude to read and 
 - **Read Receipts**: Explicitly mark selected messages as read across linked devices
 - **Media Support**: Send and download images, videos, documents, and voice messages
 - **Call History**: Capture incoming voice/video calls into a local SQLite table (live, 1:1 and group)
+- **Slow-send jobs (fork)**: Send one personal message to each of up to 100 people in the background, paced 45–90 s apart with breaks, resumable and never double-sent
 - **Webhook Integration**: Forward incoming messages to external services
 - **Local Storage**: All messages stored locally in SQLite - only sent to Claude when you allow it
 
@@ -402,6 +403,16 @@ file or base64; any JPEG, PNG or WebP is cropped and converted for you),
 (`/api/group/*`, `/api/community/*`, `/api/communities`, `/api/profile-picture`), their JSON
 shapes and what WhatsApp does not allow are documented in [`FORK.md`](./FORK.md).
 
+### Slow-send jobs (fork)
+
+For invites or announcements to many people, `start_send_job` queues one message per person
+(with `{name}` filled in) and the bridge sends them in the background, one at a time, with
+a random 45–90 second gap and a 5 minute break after every 25. Jobs survive bridge restarts,
+never send the same person twice, pause themselves on the first failed send, and can be
+rehearsed with `dry_run=True`. Follow and steer them with `get_send_job`, `list_send_jobs`,
+`pause_send_job`, `resume_send_job` (optionally `retry_failed=True`) and `cancel_send_job`.
+Details, limits and the `/api/send-jobs` endpoints are in [`FORK.md`](./FORK.md#slow-send-jobs).
+
 ### Chat Operations
 
 All chat tools (`list_chats`, `get_chat`, `get_direct_chat_by_contact`,
@@ -507,6 +518,12 @@ Copy `.env.example` to `.env` and configure as needed:
 | `WHATSAPP_BRIDGE_TOKEN` | generated next to `WHATSMEOW_DB_PATH` as `.bridge-token` | Bearer token for bridge REST calls; also signed onto outbound webhook POSTs |
 | `WHATSAPP_MEDIA_ROOTS` | `~/.local/share/whatsapp-mcp/outbox`     | Path-list of directories allowed for outbound media files |
 | `WHATSAPP_DEVICE_NAME` | `whatsmeow` (whatsmeow default)          | Label shown for this connection under WhatsApp > Linked Devices. Set to a recognisable name. Applies at pair time only (re-pair to change) |
+| `WHATSAPP_SEND_JOB_MIN_DELAY_S` | `45`                            | Slow-send jobs: shortest random gap between two sends (seconds) |
+| `WHATSAPP_SEND_JOB_MAX_DELAY_S` | `90`                            | Slow-send jobs: longest random gap between two sends (seconds) |
+| `WHATSAPP_SEND_JOB_BATCH_SIZE` | `25`                             | Slow-send jobs: sends between breaks (`0` disables breaks) |
+| `WHATSAPP_SEND_JOB_BATCH_BREAK_S` | `300`                         | Slow-send jobs: length of the break (seconds) |
+| `WHATSAPP_SEND_JOB_MAX_RECIPIENTS` | `100`                        | Slow-send jobs: most unique recipients per job; bigger jobs are rejected |
+| `WHATSAPP_SEND_JOB_DRY_RUN` | `false`                             | Slow-send jobs: `true` makes every new job a dry run that sends nothing |
 | `WHATSAPP_MCP_TRANSPORT` | `stdio`                                | MCP transport to serve clients: `stdio`, `http`, or `sse` |
 | `WHATSAPP_MCP_HOST`    | `127.0.0.1`                              | Bind address for the `http`/`sse` transports |
 | `WHATSAPP_MCP_PORT`    | `8000`                                   | Port for the `http`/`sse` transports |

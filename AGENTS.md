@@ -103,6 +103,12 @@ A failing blocking job is a hard block — fix it or explain in the PR why it's 
 | `WHATSAPP_BRIDGE_TOKEN` | generated next to `WHATSMEOW_DB_PATH` as `.bridge-token` | Bearer token required for bridge REST calls |
 | `WHATSAPP_MEDIA_ROOTS` | `~/.local/share/whatsapp-mcp/outbox` | Path-list of directories allowed for outbound media files |
 | `WHATSAPP_DEVICE_NAME` | `whatsmeow` (whatsmeow default) | Linked-device label shown in WhatsApp > Linked Devices. Applied at pair time only (`store.DeviceProps.Os`); re-pair to change |
+| `WHATSAPP_SEND_JOB_MIN_DELAY_S` | `45` | Bridge: shortest random gap between slow-send job messages (seconds) |
+| `WHATSAPP_SEND_JOB_MAX_DELAY_S` | `90` | Bridge: longest random gap between slow-send job messages (seconds) |
+| `WHATSAPP_SEND_JOB_BATCH_SIZE` | `25` | Bridge: slow-send messages between breaks (`0` disables breaks) |
+| `WHATSAPP_SEND_JOB_BATCH_BREAK_S` | `300` | Bridge: length of the slow-send break (seconds) |
+| `WHATSAPP_SEND_JOB_MAX_RECIPIENTS` | `100` | Bridge: most unique recipients per slow-send job; bigger jobs are rejected |
+| `WHATSAPP_SEND_JOB_DRY_RUN` | `false` | Bridge: `true` makes every new slow-send job a dry run (fixed per job at creation) |
 | `WHATSAPP_MCP_TRANSPORT` | `stdio` | MCP transport to serve clients: `stdio`, `http`, or `sse` |
 | `WHATSAPP_MCP_HOST` | `127.0.0.1` | Bind address for the `http`/`sse` transports |
 | `WHATSAPP_MCP_PORT` | `8000` | Port for the `http`/`sse` transports |
@@ -131,6 +137,7 @@ When adding a new env var: document it here, in `README.md`, and in `.env.exampl
 | Change bridge REST API or event handling | `whatsapp-bridge/main.go` |
 | Change webhook payload | `whatsapp-bridge/webhook.go` |
 | Group management / profile pictures (fork, see `FORK.md`) | `whatsapp-bridge/groups.go`, tools in `whatsapp-mcp-server/main.py` |
+| Slow-send jobs (fork, see `FORK.md`) | `whatsapp-bridge/send_jobs.go`, tools in `whatsapp-mcp-server/main.py` |
 | Change CI behavior | `.github/workflows/*.yml` |
 | Change release behavior | `release-please-config.json`, `.release-please-manifest.json` |
 
